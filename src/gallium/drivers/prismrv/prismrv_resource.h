@@ -13,6 +13,8 @@ void prismrv_resource_screen_fini(struct prismrv_screen *screen);
 struct prismrv_screen;
 struct prismrv_resource;
 
+unsigned long ALIGN(unsigned long x, unsigned long y);
+
 void prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
                                    struct prismrv_resource *res);
 

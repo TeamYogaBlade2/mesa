@@ -17,6 +17,19 @@ struct prismrv_batch {
    uint32_t cmd_capacity;
 };
 
+/* bound shader state */
+struct prismrv_shader_state {
+   void *nir;               /* nir_shader after gallium translation */
+   char *usse_text;         /* compiled USSE text */
+   unsigned usse_len;
+};
+
+struct prismrv_vertex_element {
+   unsigned src_offset;
+   enum pipe_format src_format;
+   unsigned vertex_buffer_index;
+};
+
 struct prismrv_sampler_view {
    struct pipe_sampler_view base;
 };
@@ -33,6 +46,18 @@ struct prismrv_context {
 
    struct pipe_framebuffer_state framebuffer;
    struct pipe_scissor_state scissors[PRISMRV_MAX_VIEWPORTS];
+
+   /* bound shaders */
+   struct prismrv_shader_state vs;
+   struct prismrv_shader_state fs;
+
+   /* vertex elements */
+   struct prismrv_vertex_element vertex_elements[8];
+   unsigned num_vertex_elements;
+
+   /* constant buffer data */
+   float constants[4 * 64];    /* up to 64 vec4 uniforms */
+   unsigned num_constants;
 };
 
 static inline const struct pipe_framebuffer_state *
