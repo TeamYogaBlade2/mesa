@@ -15,6 +15,11 @@ struct prismrv_batch {
    uint8_t *cmd_map;
    uint32_t cmd_size;
    uint32_t cmd_capacity;
+
+   /* layer-2 TA packet stream BO */
+   uint32_t ta_handle;
+   uint8_t *ta_map;
+   uint32_t ta_capacity;
 };
 
 /* bound shader state */

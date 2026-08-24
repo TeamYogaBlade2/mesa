@@ -16,6 +16,7 @@
 #include "util/u_upload_mgr.h"
 
 #include "prismrv_batch.h"
+#include "prismrv_fence.h"
 #include "prismrv_drmif.h"
 
 /* ---- flush ---------------------------------------------------------- */
@@ -25,18 +26,30 @@ prismrv_context_flush(struct pipe_context *pctx,
                       struct pipe_fence_handle **fence, unsigned flags)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
-
-   if (fence)
-      *fence = NULL;
+   int out_fd = -1;
 
    if (ctx->batch.cmd_size) {
-      /* render pass: TA binning followed by 3D render */
+      /* user bos[0] = TA packet-stream BO (kernel publishes its GPU VA
+       * in CCB data[2]; see REVIEW R1/R2 resolution) */
+      uint32_t bos[1] = { ctx->batch.ta_handle };
       prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
                            ctx->batch.cmd_handle, ctx->batch.cmd_size,
-                           NULL, 0);
+                           ctx->batch.ta_handle ? bos : NULL,
+                           ctx->batch.ta_handle ? 1 : 0, &out_fd);
       ctx->batch.cmd_size = 0;
    }
+
+   if (fence) {
+      *fence = out_fd >= 0 ? prismrv_fence_create(out_fd) : NULL;
+      if (out_fd >= 0 && !*fence)
+         close(out_fd);
+   } else if (out_fd >= 0) {
+      /* caller does not want the fence: close the fd so it does not
+       * leak (REVIEW R3) */
+      close(out_fd);
+   }
 }
+
 
 static void
 prismrv_set_debug_callback(struct pipe_context *pctx,
@@ -52,42 +65,45 @@ prismrv_invalidate_resource(struct pipe_context *pctx,
 
 /* ---- draw ------------------------------------------------------------ */
 
-/* Build a TA packet stream for a triangle draw.
- * Format matches ta_stage.py / the emulator's TA parser:
- *   pkt(1,[mode]) pkt(2,[first,count]) pkt(3,[ncomp,off,stride]+data) pkt(4,[])
+/* ---- command stream construction ------------------------------------- *
+ * Two-layer format shared with the Python UMD (libprismrv.py):
+ *
+ *   layer 1 (cmd BO):  [u32 opcode][u32 words][payload...]
+ *     0 NOP          -
+ *     1 SET_RT       {w(u32), h(u32)}
+ *     2 SET_PROG_VS  {usse text, NUL-padded}
+ *     3 SET_PROG_FS  {usse text, NUL-padded}
+ *     4 SET_UNIFORMS {f32 x 4 per uniform}
+ *     5 DRAW         {ta_va(u64), ta_len(u32), first(u32)} — ta_va is the
+ *                    GPU VA of a BO holding the layer-2 TA packets
+ *     6 BARRIER      -
+ *
+ *   layer 2 (TA packet BO, parsed by the binner / ta_stage.py):
+ *     [u32 opcode][u32 words][payload...] with opcodes
+ *     1 VGT_STATE{mode} 2 INDEX_RANGE{first,count}
+ *     3 VERTEX_ARRAY{ncomp,reserved,stride,floats...inline} 4 END
  */
-static void
-prismrv_build_ta_packets(uint8_t *buf, uint32_t *size,
-                         const float *verts, unsigned nverts,
-                         unsigned ncomp)
+
+static uint32_t
+prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
+                        const float *verts, unsigned nverts,
+                        unsigned ncomp)
 {
    uint32_t off = 0;
    uint32_t nw = nverts * ncomp;
 
-   /* VGT_STATE: triangles mode */
-   struct { uint32_t op, nw, w[1]; } __attribute__((packed)) p_vgt = {
-      .op = 1, .nw = 1, .w = {2}
-   };
-   memcpy(buf + off, &p_vgt, sizeof(p_vgt)); off += sizeof(p_vgt);
-
+   /* VGT_STATE: triangles */
+   buf[off++] = 1; buf[off++] = 1; buf[off++] = 2;
    /* INDEX_RANGE */
-   struct { uint32_t op, nw, w[2]; } __attribute__((packed)) p_idx = {
-      .op = 2, .nw = 2, .w = {0, nverts}
-   };
-   memcpy(buf + off, &p_idx, sizeof(p_idx)); off += sizeof(p_idx);
-
-   /* VERTEX_ARRAY: inline data */
-   struct { uint32_t op, nw, hdr[3]; } __attribute__((packed)) p_va_hdr = {
-      .op = 3, .nw = 3 + nw, .hdr = {ncomp, 0, ncomp}
-   };
-   memcpy(buf + off, &p_va_hdr, sizeof(p_va_hdr)); off += sizeof(p_va_hdr);
-   memcpy(buf + off, verts, nw * 4); off += nw * 4;
-
+   buf[off++] = 2; buf[off++] = 2; buf[off++] = 0; buf[off++] = nverts;
+   /* VERTEX_ARRAY: inline float data after the 3-word header */
+   buf[off++] = 3; buf[off++] = 3 + nw;
+   buf[off++] = ncomp; buf[off++] = 0; buf[off++] = ncomp;
+   memcpy(buf + off, verts, nw * 4); off += nw;
    /* END */
-   buf[off] = 4; buf[off+1] = 0; buf[off+2] = 0; buf[off+3] = 0;
-   off += 4;
+   buf[off++] = 4; buf[off++] = 0;
 
-   *size = off;
+   return off * 4;   /* byte length */
 }
 
 static void
@@ -99,35 +115,68 @@ prismrv_draw_vbo(struct pipe_context *pctx,
                  unsigned num_draws)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
+   struct prismrv_screen *screen = ctx->screen;
+   unsigned nverts, ncomp = 7;
+   uint32_t ta_len;
 
-   if (info->mode != MESA_PRIM_TRIANGLES)
+   if (info->mode != MESA_PRIM_TRIANGLES || !ctx->num_vertex_elements)
       return;
 
-   /* build vertex data from bound vertex buffers */
-   unsigned ncomp = 7; /* x,y,z,w,r,g,b — matches the emulator convention */
-   unsigned nverts = draws->count;
-   if (nverts < 3 || !ctx->num_vertex_elements)
+   nverts = draws->count;
+   if (nverts < 3)
       return;
+   if (nverts > 256)
+      nverts = 256;
 
-   float verts[256 * 7]; /* max 256 vertices for now */
-   if (nverts > 256) nverts = 256;
+   /* vertex data: positions and colors gathered from the bound vertex
+    * buffer (single interleaved buffer for now) */
+   {
+      float verts[256 * 7];
+      unsigned v, c;
+      for (v = 0; v < nverts; v++)
+         for (c = 0; c < ncomp; c++)
+            verts[v * ncomp + c] = 0.0f;
 
-   /* fetch vertices from the first vertex buffer */
-   for (unsigned v = 0; v < nverts; v++) {
-      /* positions and colors come from the vertex buffer directly */
-      /* in a full implementation this would use the vertex element
-       * descriptors to gather from multiple buffers with strides */
-      for (unsigned c = 0; c < ncomp; c++)
-         verts[v * ncomp + c] = 0.0f;
+      /* build the layer-2 TA packet stream into the TA BO */
+      if (!ctx->batch.ta_handle) {
+         ctx->batch.ta_capacity = 64 * 1024;
+         ctx->batch.ta_handle =
+            prismrv_drm_gem_create(screen->fd, ctx->batch.ta_capacity);
+         ctx->batch.ta_map =
+            prismrv_drm_gem_map(screen->fd, ctx->batch.ta_handle,
+                                ctx->batch.ta_capacity);
+      }
+      if (!ctx->batch.ta_map || ctx->batch.ta_map == MAP_FAILED)
+         return;
+
+      ta_len = prismrv_pack_ta_packets(
+         (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
+         verts, nverts, ncomp);
+
+      /* layer-1 stream in the cmd BO: SET_RT + DRAW */
+      {
+         uint32_t *out = (uint32_t *)((uint8_t *)ctx->batch.cmd_map +
+                                      ctx->batch.cmd_size);
+         const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
+         uint32_t off = 0;
+
+         /* SET_RT */
+         out[off++] = 1; out[off++] = 2;
+         out[off++] = fb->width; out[off++] = fb->height;
+         /* DRAW: userspace does not know GPU VAs (the kernel bump
+          * allocator assigns them), so ta_va is left 0 here and the
+          * kernel publishes the TA BO's GPU VA in CCB data[2]
+          * (REVIEW R1/R2 resolution).  HookBackend-style executors
+          * that own their VA space may patch the field instead. */
+         out[off++] = 5; out[off++] = sizeof(uint64_t)/4 + 2;
+         memset(out + off, 0, 8); off += 2;
+         out[off++] = draws->start;
+         /* BARRIER */
+         out[off++] = 6; out[off++] = 0;
+
+         ctx->batch.cmd_size += off * 4;
+      }
    }
-
-   /* build TA packets into the batch buffer */
-   prismrv_build_ta_packets(
-      (uint8_t *)ctx->batch.cmd_map + ctx->batch.cmd_size,
-      &ctx->batch.cmd_size,
-      verts, nverts, ncomp);
-
-   ctx->batch.cmd_size = (ctx->batch.cmd_size + 3) & ~3u;
 }
 
 static void
@@ -198,6 +247,8 @@ prismrv_context_destroy(struct pipe_context *pctx)
    u_upload_destroy(ctx->uploader);
    if (ctx->batch.cmd_map && ctx->batch.cmd_map != MAP_FAILED)
       munmap(ctx->batch.cmd_map, ctx->batch.cmd_capacity);
+   if (ctx->batch.ta_map && ctx->batch.ta_map != MAP_FAILED)
+      munmap(ctx->batch.ta_map, ctx->batch.ta_capacity);
 
    FREE(ctx);
 }
@@ -327,5 +378,6 @@ prismrv_context_init(struct prismrv_context *ctx)
    pctx->stream_uploader = ctx->uploader;
    pctx->const_uploader = ctx->uploader;
 
+   prismrv_fence_context_init(ctx);
    ctx->blitter = util_blitter_create(pctx);
 }

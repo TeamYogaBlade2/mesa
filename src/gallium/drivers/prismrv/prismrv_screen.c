@@ -19,6 +19,7 @@
 #include "prismrv_context.h"
 #include "prismrv_drmif.h"
 #include "prismrv_resource.h"
+#include "prismrv_fence.h"
 
 static const char *
 prismrv_screen_get_name(struct pipe_screen *pscreen)
@@ -129,6 +130,7 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    caps->max_texture_cube_levels = 0;
 
    prismrv_resource_screen_init(screen);
+   prismrv_fence_screen_init(screen);
 
    return &screen->base;
 }

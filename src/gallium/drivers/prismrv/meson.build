@@ -6,6 +6,7 @@ files_prismrv = files(
   'prismrv_chipinfo.c',
   'prismrv_context.c',
   'prismrv_drmif.c',
+  'prismrv_fence.c',
   'prismrv_resource.c',
   'prismrv_screen.c',
 )
