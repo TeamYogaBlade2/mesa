@@ -16,6 +16,7 @@ prismrv_includes = [
   inc_src,
   inc_gallium,
   inc_gallium_aux,
+  inc_gallium_winsys,
   # local drm-uapi/ holds prismrv_drm.h until it lands in libdrm
   include_directories('.'),
 ]

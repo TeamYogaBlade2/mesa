@@ -12,4 +12,8 @@
 struct pipe_screen *prismrv_screen_create(int fd,
                                           const struct pipe_screen_config *config);
 
+/* called from the winsys layer */
+struct pipe_screen *prismrv_drm_screen_create(int fd,
+                                              const struct pipe_screen_config *config);
+
 #endif /* PRISMRV_SCREEN_H_ */

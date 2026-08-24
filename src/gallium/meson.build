@@ -185,6 +185,7 @@ else
   driver_lima = declare_dependency()
 endif
 if with_gallium_prismrv
+  subdir('winsys/prismrv/drm')
   subdir('drivers/prismrv')
 else
   driver_prismrv = declare_dependency()
