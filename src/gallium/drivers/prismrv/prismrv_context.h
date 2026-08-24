@@ -23,12 +23,6 @@ struct prismrv_sampler_view {
 
 #define PRISMRV_MAX_VIEWPORTS 16
 
-static inline const struct pipe_framebuffer_state *
-prismrv_framebuffer(struct prismrv_context *ctx)
-{
-   return &ctx->framebuffer;
-}
-
 struct prismrv_context {
    struct pipe_context base;
    struct prismrv_screen *screen;
@@ -40,6 +34,12 @@ struct prismrv_context {
    struct pipe_framebuffer_state framebuffer;
    struct pipe_scissor_state scissors[PRISMRV_MAX_VIEWPORTS];
 };
+
+static inline const struct pipe_framebuffer_state *
+prismrv_framebuffer(struct prismrv_context *ctx)
+{
+   return &ctx->framebuffer;
+}
 
 struct pipe_context *
 prismrv_context_create(struct pipe_screen *pscreen, void *priv,

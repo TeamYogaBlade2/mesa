@@ -7,6 +7,8 @@
 #include "prismrv_context.h"
 
 #include <sys/mman.h>
+
+#include "pipe/p_defines.h"
 #include <unistd.h>
 
 #include "util/u_blitter.h"
@@ -90,8 +92,7 @@ prismrv_set_scissor_states(struct pipe_context *pctx,
 
 static void
 prismrv_set_constant_buffer(struct pipe_context *pctx,
-                            enum pipe_shader_type shader, uint index,
-                            bool take_ownership,
+                            mesa_shader_stage shader, uint index,
                             const struct pipe_constant_buffer *cb)
 {
 }
