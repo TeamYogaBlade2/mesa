@@ -29,6 +29,10 @@ libprismrv = static_library(
   dependencies : [dep_libdrm, idep_mesautil, idep_nir],
 )
 
+if with_tools.contains('drm-shim')
+  subdir('drm-shim')
+endif
+
 driver_prismrv = declare_dependency(
   compile_args : [],
   link_with : libprismrv,
