@@ -1,6 +1,7 @@
 name: PrismRV-CI
 
 on:
+  workflow_dispatch:
   push:
     branches: [prismrv-oxalpha]
     paths:
