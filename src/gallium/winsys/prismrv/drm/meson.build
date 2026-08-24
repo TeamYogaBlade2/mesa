@@ -6,6 +6,7 @@ libprismrvwinsys = static_library(
   files('prismrv_drm_winsys.c'),
   include_directories : [
     inc_src, inc_include, inc_gallium, inc_gallium_aux,
+    include_directories('../../drivers'),
   ],
   dependencies : [dep_libdrm],
 )

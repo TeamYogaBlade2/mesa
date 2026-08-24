@@ -6,7 +6,7 @@
 #include "util/u_screen.h"
 
 #include "prismrv_drm_public.h"
-#include "prismrv/prismrv_screen.h"
+#include "prismrv/prismrv_screen.h"  /* via inc_gallium_drivers */
 
 struct pipe_screen *
 prismrv_drm_screen_create(int fd, const struct pipe_screen_config *config)
