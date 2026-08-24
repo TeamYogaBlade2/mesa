@@ -60,6 +60,7 @@ jobs:
           clang -fsyntax-only -std=c11 \
             -DHAVE_ENDIAN_H -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC \
             -D_GNU_SOURCE -DNDEBUG \
+            -Isrc/gallium/include -Isrc/gallium/auxiliary \
             -Isrc/compiler/nir/generated -Isrc/compiler/generated \
             -Isrc -Isrc/compiler/nir -Isrc/compiler -Isrc/util -Iinclude \
             "$f" || exit 1
