@@ -1,0 +1,66 @@
+name: PrismRV-CI
+
+on:
+  push:
+    branches: [prismrv-oxalpha]
+    paths:
+      - 'src/gallium/drivers/prismrv/**'
+      - 'src/gallium/meson.build'
+      - 'meson.options'
+      - '.github/workflows/prismrv.yml'
+  pull_request:
+    branches: [prismrv-oxalpha]
+    paths:
+      - 'src/gallium/drivers/prismrv/**'
+
+permissions:
+  contents: read
+
+jobs:
+  meson-build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bison flex ninja-build pkg-config \
+          libdrm-dev libexpat1-dev zlib1g-dev \
+        && python3 -m pip install mako meson pyyaml ply
+
+    - name: Configure (prismrv only, minimal)
+      run: |
+        meson setup build \
+          -Dgallium-drivers=prismrv \
+          -Dgallium-extra-hud=false \
+          -Dvulkan-drivers=[] \
+          -Dglx=disabled \
+          -Dplatforms=[] \
+          -Degl=disabled \
+          -Dgbm=disabled \
+          -Dopengl=true \
+          -Dgles1=disabled \
+          -Dgles2=disabled \
+          -Dllvm=disabled \
+          -Dshared-glapi=enabled \
+          -Dbuild-tests=false
+
+    - name: Build
+      run: ninja -C build
+
+  syntax-only:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Syntax check (clang -fsyntax-only)
+      run: |
+        for f in src/gallium/drivers/prismrv/*.c; do
+          clang -fsyntax-only -std=c11 \
+            -DHAVE_ENDIAN_H -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC \
+            -D_GNU_SOURCE -DNDEBUG \
+            -Isrc/compiler/nir/generated -Isrc/compiler/generated \
+            -Isrc -Isrc/compiler/nir -Isrc/compiler -Isrc/util -Iinclude \
+            "$f" || exit 1
+        done

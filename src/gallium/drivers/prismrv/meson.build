@@ -20,10 +20,6 @@ prismrv_includes = [
   include_directories('.'),
 ]
 
-if with_tools.contains('drm-shim')
-  subdir('drm-shim')
-endif
-
 libprismrv = static_library(
   'prismrv',
   [files_prismrv],
@@ -32,7 +28,10 @@ libprismrv = static_library(
   dependencies : [dep_libdrm, idep_mesautil, idep_nir],
 )
 
-gallium_drivers += libprismrv
+driver_prismrv = declare_dependency(
+  compile_args : [],
+  link_with : libprismrv,
+)
 
 # DRI target integration (enabled once the driver passes a full meson
 # build; see the note in docs/prismrv):
