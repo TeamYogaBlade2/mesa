@@ -46,10 +46,14 @@ jobs:
           -Dgles2=disabled \
           -Dllvm=disabled \
           -Dshared-glapi=enabled \
-          -Dbuild-tests=false
+          -Dtools=drm-shim \
+          -Dbuild-tests=true
 
     - name: Build
       run: ninja -C build
+
+    - name: Run prismrv NIR test
+      run: meson test -C build prismrv-nir --print-errorlogs
 
   syntax-only:
     runs-on: ubuntu-22.04

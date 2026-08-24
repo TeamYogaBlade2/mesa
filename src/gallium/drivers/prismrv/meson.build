@@ -38,6 +38,16 @@ driver_prismrv = declare_dependency(
   link_with : libprismrv,
 )
 
+if with_tests
+  prismrv_nir_test = executable(
+    'prismrv_nir_test',
+    ['prismrv_test_nir.c', 'prismrv_program.c'],
+    include_directories : prismrv_includes,
+    dependencies : [idep_nir, idep_mesautil],
+  )
+  test('prismrv-nir', prismrv_nir_test)
+endif
+
 # DRI target integration (enabled once the driver passes a full meson
 # build; see the note in docs/prismrv):
 #
