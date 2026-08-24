@@ -23,7 +23,7 @@ prismrv_includes = [
 libprismrv = static_library(
   'prismrv',
   [files_prismrv],
-  c_args : [c_vis_args, prismrv_c_args],
+  c_args : prismrv_c_args,
   include_directories : prismrv_includes,
   dependencies : [dep_libdrm, idep_mesautil, idep_nir],
 )
