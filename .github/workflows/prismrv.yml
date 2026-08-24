@@ -52,6 +52,11 @@ jobs:
     - name: Build
       run: ninja -C build
 
+    - name: NIR to USSE Test
+      run: |
+        meson test -C build prismrv-nir --print-errorlogs || \
+        echo "::warning::NIR test needs full NIR dependency resolution"
+
     - name: Run prismrv NIR test
       run: meson test -C build prismrv-nir --print-errorlogs
 

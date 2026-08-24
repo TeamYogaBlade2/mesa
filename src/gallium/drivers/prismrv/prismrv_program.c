@@ -135,19 +135,38 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
 static void
 emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
 {
-   /* loads/stores are no-ops in the text form: the emulator preloads
-    * uniforms into r16.. and varyings into r32.. per the ABI, and the
-    * output store maps onto the o-bank writes below. */
-   (void)c; (void)intr;
+   /* loads are no-ops in the text form: the emulator preloads uniforms
+    * into r16.. and varyings into r32.. per the ABI.
+    *
+    * Stores to the fragment colour output become explicit o-bank copies,
+    * one scalar line per component (the emulator's parser is scalar). */
+   switch (intr->intrinsic) {
+   case nir_intrinsic_store_output: {
+      nir_def *val = intr->src[0].ssa;
+      unsigned base = ssa_base(&c->rm, val);
+      unsigned mask = nir_intrinsic_write_mask(intr);
+      unsigned comps = val->num_components;
+
+      for (unsigned ch = 0; ch < comps && ch < 4; ch++) {
+         if (!(mask & (1u << ch)))
+            continue;
+         emit_line(c, "vmov o%u, r%u, swizzle(xxxx)", ch, base + ch);
+      }
+      break;
+   }
+   default:
+      break;
+   }
 }
 
 char *
 prismrv_nir_to_usse(void *memctx, nir_shader *nir)
 {
    struct emit_ctx ctx;
-   char dst[64];
 
    memset(&ctx, 0, sizeof(ctx));
+   /* ralloc_strcat() requires a non-NULL destination string */
+   ctx.out = ralloc_strdup(memctx, "");
 
    emit_line(&ctx, "# %s shader", mesa_shader_stage_name(nir->info.stage));
 
@@ -168,16 +187,7 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
          }
       }
 
-      /* fragment outputs: store_output intrinsics were skipped above;
-       * conventionally the last written varying set lands in the
-       * o-bank.  For the bring-up tests we close with explicit output
-       * copies from the highest allocated temp group. */
-      if (nir->info.stage == MESA_SHADER_FRAGMENT && ctx.out &&
-          strstr(ctx.out, "vmov")) {
-         /* nothing extra: tests wire outputs explicitly */
-      }
    }
 
-   (void)dst;
    return ctx.out ? ctx.out : ralloc_strdup(memctx, "");
 }
