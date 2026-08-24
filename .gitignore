@@ -7,3 +7,8 @@
 /build
 .venv/
 *.mda.tar
+
+# Mesa: generated headers/sources (produced by build_nir_test.sh / meson)
+src/compiler/generated/
+src/compiler/nir/generated/
+src/util/format/generated/
