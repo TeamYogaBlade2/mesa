@@ -10,9 +10,7 @@ libprismrvwinsys = static_library(
   dependencies : [dep_libdrm],
 )
 
-if with_gallium_prismrv
-  driver_prismrv = declare_dependency(
-    compile_args : [],
-    link_with : [libprismrvwinsys, libprismrv],
-  )
-endif
+driver_prismrv = declare_dependency(
+  compile_args : [],
+  link_with : libprismrvwinsys,
+)

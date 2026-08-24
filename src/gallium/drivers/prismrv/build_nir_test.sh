@@ -22,7 +22,7 @@ INC="-Isrc/compiler/nir/generated -Isrc/compiler/generated -Isrc -Isrc/compiler/
 [ -f src/compiler/nir/generated/nir_opt_algebraic.c ] || (cd src/compiler/nir && $VENV_PY nir_algebraic.py > generated/nir_opt_algebraic.c)
 
 # 2) build libnir from all nir .c files + the generated ones
-for c in src/compiler/nir/*.c src/compiler/nir/generated/nir_opcodes.c src/compiler/nir/generated/nir_intrinsics.c; do
+for c in src/compiler/nir/*.c src/compiler/nir/generated/*.c src/util/range_minimum_query.c src/util/u_thread.c src/util/thread_sched.c src/util/detect.c src/util/u_debug.c src/util/log.c src/util/os_file.c src/util/os_time.c src/util/u_process.c src/util/memstream.c; do
   o="$BUILD/$(basename $c .c).o"
   [ -f "$o" ] && [ "$o" -nt "$c" ] && continue
   clang $FLAGS $INC -c "$c" -o "$o" &
@@ -47,11 +47,10 @@ clang $FLAGS $INC \
   src/gallium/drivers/prismrv/prismrv_program.c \
   src/compiler/shader_enums.c \
   src/util/ralloc.c src/util/u_math.c src/util/blob.c \
-  src/util/u_idalloc.c src/util/u_debug.c src/util/string_buffer.c \
+  src/util/u_idalloc.c src/util/string_buffer.c \
   src/util/hash_table.c src/util/set.c src/util/u_vector.c \
   src/util/half_float.c src/util/simple_mtx.c src/util/u_call_once.c \
-  src/util/os_time.c src/util/os_file.c src/util/slab.c \
-  src/util/u_dynarray.c src/util/u_printf.c \
+  src/util/slab.c src/util/u_dynarray.c src/util/u_printf.c \
   -Isrc/util/format src/util/format/generated/u_format_table.c src/util/format/u_format.c \
   "$BUILD/libnir.a" "$BUILD/glsl_types.o" "$BUILD/builtin_types.o" \
   src/util/hash_table.c src/util/set.c src/util/u_vector.c \
