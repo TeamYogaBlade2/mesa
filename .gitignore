@@ -12,3 +12,12 @@
 src/compiler/generated/
 src/compiler/nir/generated/
 src/util/format/generated/
+# meson custom_target outputs that land in-tree when building locally
+src/compiler/builtin_types.h
+src/compiler/nir/nir_builder_opcodes.h
+src/compiler/nir/nir_intrinsics.h
+src/compiler/nir/nir_intrinsics_indices.h
+src/compiler/nir/nir_opcodes.h
+src/util/format/u_format_gen.h
+src/util/format/u_format_pack.h
+src/util/format/u_format_table.c
