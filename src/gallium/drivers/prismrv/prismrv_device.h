@@ -21,10 +21,8 @@
 #include "pipe/p_state.h"
 
 /* SGX core types (kernel prismrv_device.h PRISMRV_CORE_*) */
-#define PRISMRV_CORE_SGX530   0x0130
 #define PRISMRV_CORE_SGX531   0x0131
 #define PRISMRV_CORE_SGX535   0x0135
-#define PRISMRV_CORE_SGX540   0x0140
 #define PRISMRV_CORE_SGX543   0x0143
 #define PRISMRV_CORE_SGX544   0x0144
 #define PRISMRV_CORE_SGX545   0x0145
@@ -116,6 +114,7 @@ struct prismrv_resource {
    void *cpu_map;
    uint64_t mmap_offset;
    uint32_t gpu_va;
+   size_t size;
 };
 
 static inline struct prismrv_screen *

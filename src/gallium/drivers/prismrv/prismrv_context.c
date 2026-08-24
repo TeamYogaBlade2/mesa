@@ -30,6 +30,7 @@ prismrv_context_flush(struct pipe_context *pctx,
       *fence = NULL;
 
    if (ctx->batch.cmd_size) {
+      /* render pass: TA binning followed by 3D render */
       prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
                            ctx->batch.cmd_handle, ctx->batch.cmd_size,
                            NULL, 0);

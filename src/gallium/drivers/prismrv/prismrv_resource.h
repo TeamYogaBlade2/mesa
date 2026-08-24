@@ -10,6 +10,12 @@ struct prismrv_screen;
 void prismrv_resource_screen_init(struct prismrv_screen *screen);
 void prismrv_resource_screen_fini(struct prismrv_screen *screen);
 
+struct prismrv_screen;
+struct prismrv_resource;
+
+void prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
+                                   struct prismrv_resource *res);
+
 #endif /* PRISMRV_RESOURCE_H_ */
 /* include prismrv_device.h for struct prismrv_resource definition */
 #include "prismrv_device.h"

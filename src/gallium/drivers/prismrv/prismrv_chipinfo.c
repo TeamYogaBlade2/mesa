@@ -23,35 +23,11 @@ const struct prismrv_chip_info prismrv_sgx544_info = {
    .max_rt_height = 4096,
 };
 
-static const struct prismrv_chip_info prismrv_sgx540_info = {
-   .name = "sgx540",
-   .core_id = PRISMRV_CORE_SGX540,
-   .num_cores = 1,
-   .has_isp2 = false,
-   .has_multi_event_kick = false,
-   .has_pbe_mipmap = true,
-   .max_rt_width = 2048,
-   .max_rt_height = 2048,
-};
-
-static const struct prismrv_chip_info prismrv_sgx530_info = {
-   .name = "sgx530",
-   .core_id = PRISMRV_CORE_SGX530,
-   .num_cores = 1,
-   .has_isp2 = false,
-   .has_multi_event_kick = false,
-   .has_pbe_mipmap = false,
-   .max_rt_width = 1024,
-   .max_rt_height = 1024,
-};
-
 static const struct {
    uint32_t core_id;
    const struct prismrv_chip_info *info;
 } prismrv_core_table[] = {
    { PRISMRV_CORE_SGX544, &prismrv_sgx544_info },
-   { PRISMRV_CORE_SGX540, &prismrv_sgx540_info },
-   { PRISMRV_CORE_SGX530, &prismrv_sgx530_info },
 };
 
 const struct prismrv_chip_info *
