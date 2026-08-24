@@ -82,8 +82,10 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
 }
 
 struct pipe_screen *
-prismrv_screen_create(int fd, const struct pipe_screen_config *config)
+prismrv_screen_create(int fd, const struct pipe_screen_config *config,
+                      struct renderonly *ro)
 {
+   (void)ro;
    struct prismrv_screen *screen;
    struct pipe_caps *caps;
    uint64_t gpu_id;

@@ -9,8 +9,11 @@
 
 #include "frontend/drm_driver.h"
 
+struct renderonly;
+
 struct pipe_screen *prismrv_screen_create(int fd,
-                                          const struct pipe_screen_config *config);
+                                          const struct pipe_screen_config *config,
+                                          struct renderonly *ro);
 
 /* called from the winsys layer */
 struct pipe_screen *prismrv_drm_screen_create(int fd,
