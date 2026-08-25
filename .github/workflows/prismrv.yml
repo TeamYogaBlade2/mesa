@@ -194,6 +194,11 @@ jobs:
     - name: Stage install tree
       run: |
         meson install -C build-arm --destdir stage
+        STAGE="$(pwd)/build-arm/stage"
+        # sanity: the megadriver and its dri symlinks must be there
+        find "${STAGE}" -name 'dril_dri.so' -o -name '*_dri.so' -o -name 'libEGL*' | sort
+        test -e "$(find "${STAGE}" -name 'prismrv_dri.so' | head -1)" \
+          || test -e "$(find "${STAGE}" -name 'dril_dri.so' | head -1)"
         SHORT_SHA="${GITHUB_SHA::7}"
         {
           echo "PrismRV Mesa ${SHORT_SHA} (armhf)"
@@ -201,13 +206,19 @@ jobs:
           echo "Target  : Lenovo Yoga Tablet 8 B8000-F (MT6589 / SGX544)"
           echo "ABI     : linux armv7-a + NEON, hard-float"
           echo "Source  : teamYogaBlade2/mesa @ prismrv-oxalpha, commit ${GITHUB_SHA}"
-          echo "Options : gallium-drivers=prismrv, egl=enabled, glx/gbm/xmlconfig disabled"
+          echo "Options : gallium-drivers=prismrv, egl=enabled (surfaceless/dri2 platform),"
+          echo "          glx/gbm/xmlconfig disabled"
           echo ""
           echo "Layout:"
-          echo "  usr/lib/*/dri/prismrv_dri.so -> gallium_dri.so (mega driver)"
-          echo "  usr/lib/*/libEGL_mesa.so.1, libglapi.so.0"
-        } > stage/prismrv-mesa-README.txt
-        find stage -type f -o -type l | sort
+          echo "  usr/local/lib/libgallium-<ver>.so      mega driver (prismrv entrypoint)"
+          echo "  usr/local/lib/libEGL.so.1              EGL (use EGL_PLATFORM=surfaceless)"
+          echo "  usr/local/lib/libexpat.so.1"
+          echo "  usr/local/include/                     EGL/GL/KHR headers"
+          echo ""
+          echo "The tarball is a plain sysroot tree; copy usr/ over /usr on the"
+          echo "tablet or point LD_LIBRARY_PATH/EGL_DRIVER at the lib dir."
+        } > "${STAGE}/prismrv-mesa-README.txt"
+        find "${STAGE}" -type f -o -type l | sort
 
     - name: Pack tarball
       run: |
@@ -234,7 +245,11 @@ jobs:
           - branch: prismrv-oxalpha
           - commit: ${{ github.sha }}
           - target: linux armv7-a hard-float (NEON)
-          - contents: gallium_dri.so (prismrv), libEGL_mesa.so.1, libglapi.so.0
+          - contents: libgallium (prismrv dri entrypoint), libEGL.so.1
+            (surfaceless/dri2), libexpat, EGL/GL headers
+
+          Unpack and copy usr/ over /usr, or point LD_LIBRARY_PATH at the
+          lib directory. Use EGL_PLATFORM=surfaceless.
         files: prismrv-mesa-*-armhf.tar.xz
         prerelease: true
         make_latest: false
