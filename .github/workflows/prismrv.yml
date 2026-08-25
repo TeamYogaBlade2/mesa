@@ -159,8 +159,9 @@ jobs:
         c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
         cpp_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
         EOF
-        # Multiarch pkg-config wrapper: resolve .pc files for the armhf sysroot
-        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/opt/sysroot-armhf/usr/lib/%s/pkgconfig:/opt/sysroot-armhf/usr/share/pkgconfig" exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
+        # Multiarch pkg-config wrapper: resolve .pc files inside the armhf
+        # sysroot (SYSROOT_DIR rewrites the /usr prefix baked into the .pc)
+        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/opt/sysroot-armhf/usr/lib/%s/pkgconfig:/opt/sysroot-armhf/usr/share/pkgconfig" PKG_CONFIG_SYSROOT_DIR=/opt/sysroot-armhf exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
           sudo tee /usr/local/bin/${CROSS_TRIPLET}-pkg-config > /dev/null
         sudo chmod +x /usr/local/bin/${CROSS_TRIPLET}-pkg-config
 
