@@ -151,9 +151,13 @@ jobs:
         endian = 'little'
 
         [properties]
-        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI
-        c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
-        cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
+        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI.
+        # The explicit -I is required: meson drops the sysroot-prefix include
+        # coming from libdrm.pc, hiding /usr/include/xf86drm.h
+        c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
+                  '-I/opt/sysroot-armhf/usr/include']
+        cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
+                    '-I/opt/sysroot-armhf/usr/include']
 
         [built-in options]
         c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
