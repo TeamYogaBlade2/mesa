@@ -263,6 +263,7 @@ with_gallium_drm = system_has_kms_drm and [
   with_gallium_freedreno,
   with_gallium_lima,
   with_gallium_panfrost,
+  with_gallium_prismrv,
   with_gallium_v3d,
   with_gallium_vc4,
 ].contains(true)

@@ -11,6 +11,6 @@ libprismrvwinsys = static_library(
 )
 
 driver_prismrv = declare_dependency(
-  compile_args : [],
+  compile_args : ['-DGALLIUM_PRISMRV'],
   link_with : libprismrvwinsys,
 )
