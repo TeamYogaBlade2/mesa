@@ -17,6 +17,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: prismrv-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   meson-build:
     runs-on: ubuntu-22.04
@@ -75,3 +79,127 @@ jobs:
             -Isrc -Isrc/compiler/nir -Isrc/compiler -Isrc/util -Iinclude \
             "$f" || exit 1
         done
+
+  # Cross-compile the driver for the real hardware target:
+  # Lenovo Yoga Tablet 8 B8000-F (MT6589, ARMv7 Cortex-A9 + NEON, SGX544 GPU).
+  # Produces a drop-in tarball (gallium_dri.so mega-driver incl. prismrv,
+  # libEGL, libglapi) and publishes it to GitHub Releases.
+  armhf-release:
+    runs-on: ubuntu-22.04
+    needs: [meson-build, syntax-only]
+    permissions:
+      contents: write
+    env:
+      CROSS_TRIPLET: arm-linux-gnueabihf
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install native + cross (armhf) dependencies
+      run: |
+        sudo dpkg --add-architecture armhf
+        sudo sed -i 's|^deb |deb [arch=amd64,i386] |' /etc/apt/sources.list
+        echo "deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main universe" | \
+          sudo tee /etc/apt/sources.list.d/armhf-ports.list
+        sudo apt-get update
+        sudo apt-get install -y \
+          bison flex ninja-build pkg-config \
+          gcc-arm-linux-gnueabihf \
+          libdrm-dev:armhf zlib1g-dev:armhf
+        python3 -m pip install mako meson pyyaml ply
+
+    - name: Write cross file
+      run: |
+        cat > armhf.cross <<EOF
+        [binaries]
+        c = '${CROSS_TRIPLET}-gcc'
+        cpp = '${CROSS_TRIPLET}-g++'
+        ar = '${CROSS_TRIPLET}-ar'
+        strip = '${CROSS_TRIPLET}-strip'
+        nm = '${CROSS_TRIPLET}-nm'
+        pkg-config = '${CROSS_TRIPLET}-pkg-config'
+
+        [host_machine]
+        system = 'linux'
+        cpu_family = 'arm'
+        cpu = 'armv7-a'
+        endian = 'little'
+
+        [properties]
+        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI
+        c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
+        cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
+        EOF
+        # Multiarch pkg-config wrapper: resolve .pc files for the armhf sysroot
+        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/usr/lib/%s/pkgconfig:/usr/share/pkgconfig" exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
+          sudo tee /usr/local/bin/${CROSS_TRIPLET}-pkg-config > /dev/null
+        sudo chmod +x /usr/local/bin/${CROSS_TRIPLET}-pkg-config
+
+    - name: Configure cross build (prismrv + EGL)
+      run: |
+        meson setup build-arm \
+          --cross-file armhf.cross \
+          -Dgallium-drivers=prismrv \
+          -Dgallium-extra-hud=false \
+          -Dvulkan-drivers=[] \
+          -Dglx=disabled \
+          -Dplatforms=[] \
+          -Degl=enabled \
+          -Dgbm=disabled \
+          -Dopengl=true \
+          -Dgles1=disabled \
+          -Dgles2=disabled \
+          -Dllvm=disabled \
+          -Dshared-glapi=enabled \
+          -Dxmlconfig=disabled \
+          -Dtools=[]
+
+    - name: Build
+      run: ninja -C build-arm
+
+    - name: Stage install tree
+      run: |
+        meson install -C build-arm --destdir stage
+        SHORT_SHA="${GITHUB_SHA::7}"
+        {
+          echo "PrismRV Mesa ${SHORT_SHA} (armhf)"
+          echo ""
+          echo "Target  : Lenovo Yoga Tablet 8 B8000-F (MT6589 / SGX544)"
+          echo "ABI     : linux armv7-a + NEON, hard-float"
+          echo "Source  : teamYogaBlade2/mesa @ prismrv-oxalpha, commit ${GITHUB_SHA}"
+          echo "Options : gallium-drivers=prismrv, egl=enabled, glx/gbm/xmlconfig disabled"
+          echo ""
+          echo "Layout:"
+          echo "  usr/lib/*/dri/prismrv_dri.so -> gallium_dri.so (mega driver)"
+          echo "  usr/lib/*/libEGL_mesa.so.1, libglapi.so.0"
+        } > stage/prismrv-mesa-README.txt
+        find stage -type f -o -type l | sort
+
+    - name: Pack tarball
+      run: |
+        SHORT_SHA="${GITHUB_SHA::7}"
+        tar -C build-arm/stage -cJf "prismrv-mesa-${SHORT_SHA}-armhf.tar.xz" .
+        ls -lh prismrv-mesa-*.tar.xz
+
+    - name: Upload artifact (debug convenience)
+      uses: actions/upload-artifact@v4
+      with:
+        name: prismrv-mesa-${{ github.sha }}-armhf
+        path: prismrv-mesa-*-armhf.tar.xz
+        retention-days: 14
+
+    - name: Publish to GitHub Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: prismrv-continuous-${{ github.sha }}
+        name: PrismRV continuous ${{ github.sha }}
+        body: |
+          Continuous build of the PrismRV Gallium driver for
+          Lenovo Yoga Tablet 8 B8000-F (MT6589, SGX544).
+
+          - branch: prismrv-oxalpha
+          - commit: ${{ github.sha }}
+          - target: linux armv7-a hard-float (NEON)
+          - contents: gallium_dri.so (prismrv), libEGL_mesa.so.1, libglapi.so.0
+        files: prismrv-mesa-*-armhf.tar.xz
+        prerelease: true
+        make_latest: false
