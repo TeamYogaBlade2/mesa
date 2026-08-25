@@ -109,9 +109,10 @@ jobs:
     - name: Assemble armhf sysroot from Ubuntu Ports debs
       run: |
         set -euxo pipefail
-        mkdir -p /tmp/armhf-apt/partial /opt/sysroot-armhf
+        mkdir -p /tmp/armhf-apt/lists/partial /tmp/armhf-apt/cache/archives/partial \
+                 /opt/sysroot-armhf
+        : > /tmp/armhf-apt/status
         echo "deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main" > /tmp/armhf-apt/sources.list
-        printf 'Dir::State::status "/tmp/armhf-apt/status";\nAPT::Get::List-Cleanup "0";\n' > /tmp/armhf-apt/apt.conf
         sudo apt-get update \
           -o Dir::Etc::sourcelist=/tmp/armhf-apt/sources.list \
           -o Dir::Etc::sourceparts=/dev/null \
