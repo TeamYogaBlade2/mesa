@@ -152,16 +152,25 @@ jobs:
 
         [properties]
         # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI.
-        # The explicit -I is required: meson drops the sysroot-prefix include
-        # coming from libdrm.pc, hiding /usr/include/xf86drm.h
+        # -I: meson drops the sysroot-prefix include coming from libdrm.pc,
+        #     hiding /usr/include/xf86drm.h
+        # -DGALLIUM_PRISMRV: make sure the driver descriptor block in
+        #     drm_helper.h is compiled into the dri target regardless of
+        #     how the dependency's compile_args propagate
         c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
-                  '-I/opt/sysroot-armhf/usr/include']
+                  '-I/opt/sysroot-armhf/usr/include',
+                  '-DGALLIUM_PRISMRV']
         cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
-                    '-I/opt/sysroot-armhf/usr/include']
+                    '-I/opt/sysroot-armhf/usr/include',
+                    '-DGALLIUM_PRISMRV']
 
         [built-in options]
-        c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
-        cpp_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
+        c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                       '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                       '-Wl,--no-gc-sections']
+        cpp_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                         '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                         '-Wl,--no-gc-sections']
         EOF
         # Multiarch pkg-config wrapper: resolve .pc files inside the armhf
         # sysroot (SYSROOT_DIR rewrites the /usr prefix baked into the .pc)
@@ -203,8 +212,9 @@ jobs:
         mkdir -p "${STAGE}/usr/local/lib/dri"
         ln -sf "../${GALLIUM_SO}" "${STAGE}/usr/local/lib/dri/prismrv_dri.so"
         # fatal if the loader entrypoint is not exported
-        arm-linux-gnueabihf-nm -D "${STAGE}/usr/local/lib/${GALLIUM_SO}" | \
-          grep -q '__driDriverGetExtensions_prismrv'
+        arm-linux-gnueabihf-nm -D "${STAGE}/usr/local/lib/${GALLIUM_SO}" > /tmp/nm.txt
+        grep -F '__driDriverGetExtensions_prismrv' /tmp/nm.txt \
+          || { echo "prismrv entrypoint missing; dynamic symbols:"; cat /tmp/nm.txt; exit 1; }
         SHORT_SHA="${GITHUB_SHA::7}"
         {
           echo "PrismRV Mesa ${SHORT_SHA} (armhf)"
