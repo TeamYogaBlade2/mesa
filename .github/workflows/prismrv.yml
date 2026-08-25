@@ -131,7 +131,9 @@ jobs:
                  libxcb-xfixes0 libxcb-xfixes0-dev \
                  libxcb-randr0 libxcb-randr0-dev \
                  libxcb-render0 libxcb-render0-dev \
+                 libxcb-shape0 libxcb-shape0-dev \
                  libx11-6 libx11-dev libx11-xcb1 libx11-xcb-dev \
+                 libxext6 libxext-dev \
                  libxau6 libxau-dev libxdmcp6 libxdmcp-dev \
                  x11proto-dev xtrans-dev \
                  libxshmfence1 libxshmfence-dev \
