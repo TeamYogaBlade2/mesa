@@ -96,16 +96,41 @@ jobs:
 
     - name: Install native + cross (armhf) dependencies
       run: |
-        sudo dpkg --add-architecture armhf
-        sudo sed -i 's|^deb |deb [arch=amd64,i386] |' /etc/apt/sources.list
-        echo "deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main universe" | \
-          sudo tee /etc/apt/sources.list.d/armhf-ports.list
         sudo apt-get update
         sudo apt-get install -y \
           bison flex ninja-build pkg-config \
-          gcc-arm-linux-gnueabihf \
-          libdrm-dev:armhf zlib1g-dev:armhf
+          gcc-arm-linux-gnueabihf
         python3 -m pip install mako meson pyyaml ply
+
+    # Build a private armhf sysroot WITHOUT touching the host's apt state:
+    # an isolated sources list lets `apt-get download` fetch the exact jammy
+    # armhf debs (libdrm 2.4.110 satisfies mesa's >= 2.4.109), and we unpack
+    # them by hand. Zero dependency resolution, nothing multiarch-installed.
+    - name: Assemble armhf sysroot from Ubuntu Ports debs
+      run: |
+        set -euxo pipefail
+        mkdir -p /tmp/armhf-apt/partial /opt/sysroot-armhf
+        echo "deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main" > /tmp/armhf-apt/sources.list
+        printf 'Dir::State::status "/tmp/armhf-apt/status";\nAPT::Get::List-Cleanup "0";\n' > /tmp/armhf-apt/apt.conf
+        sudo apt-get update \
+          -o Dir::Etc::sourcelist=/tmp/armhf-apt/sources.list \
+          -o Dir::Etc::sourceparts=/dev/null \
+          -o Dir::State::lists=/tmp/armhf-apt/lists \
+          -o Dir::Cache=/tmp/armhf-apt/cache \
+          -o Dir::State::status=/tmp/armhf-apt/status
+        cd /tmp/armhf-apt
+        for p in libdrm2 libdrm-dev libdrm-nouveau2 libdrm-radeon1 libdrm-amdgpu1 zlib1g zlib1g-dev; do
+          apt-get download "$p" \
+            -o APT::Architecture=armhf \
+            -o APT::Architectures=armhf \
+            -o Dir::Etc::sourcelist=/tmp/armhf-apt/sources.list \
+            -o Dir::Etc::sourceparts=/dev/null \
+            -o Dir::State::lists=/tmp/armhf-apt/lists \
+            -o Dir::Cache=/tmp/armhf-apt/cache \
+            -o Dir::State::status=/tmp/armhf-apt/status
+        done
+        for deb in *.deb; do dpkg-deb -x "$deb" /opt/sysroot-armhf; done
+        ls /opt/sysroot-armhf/usr/lib/arm-linux-gnueabihf/pkgconfig/
 
     - name: Write cross file
       run: |
@@ -128,9 +153,13 @@ jobs:
         # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI
         c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
         cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard']
+
+        [built-in options]
+        c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
+        cpp_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}', '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}']
         EOF
         # Multiarch pkg-config wrapper: resolve .pc files for the armhf sysroot
-        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/usr/lib/%s/pkgconfig:/usr/share/pkgconfig" exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
+        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/opt/sysroot-armhf/usr/lib/%s/pkgconfig:/opt/sysroot-armhf/usr/share/pkgconfig" exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
           sudo tee /usr/local/bin/${CROSS_TRIPLET}-pkg-config > /dev/null
         sudo chmod +x /usr/local/bin/${CROSS_TRIPLET}-pkg-config
 
