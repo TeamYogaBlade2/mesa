@@ -195,10 +195,16 @@ jobs:
       run: |
         meson install -C build-arm --destdir stage
         STAGE="$(pwd)/build-arm/stage"
-        # sanity: the megadriver and its dri symlinks must be there
-        find "${STAGE}" -name 'dril_dri.so' -o -name '*_dri.so' -o -name 'libEGL*' | sort
-        test -e "$(find "${STAGE}" -name 'prismrv_dri.so' | head -1)" \
-          || test -e "$(find "${STAGE}" -name 'dril_dri.so' | head -1)"
+        # dril (which normally installs <libdir>/dri/*_dri.so) is only built
+        # with glx=dri or platforms=x11; we are surfaceless-only, so recreate
+        # the distro layout ourselves from the megadriver
+        GALLIUM_SO="$(basename "$(find "${STAGE}" -name 'libgallium-*.so' | head -1)")"
+        test -n "${GALLIUM_SO}"
+        mkdir -p "${STAGE}/usr/local/lib/dri"
+        ln -sf "../${GALLIUM_SO}" "${STAGE}/usr/local/lib/dri/prismrv_dri.so"
+        # fatal if the loader entrypoint is not exported
+        arm-linux-gnueabihf-nm -D "${STAGE}/usr/local/lib/${GALLIUM_SO}" | \
+          grep -q '__driDriverGetExtensions_prismrv'
         SHORT_SHA="${GITHUB_SHA::7}"
         {
           echo "PrismRV Mesa ${SHORT_SHA} (armhf)"
@@ -210,13 +216,14 @@ jobs:
           echo "          glx/gbm/xmlconfig disabled"
           echo ""
           echo "Layout:"
-          echo "  usr/local/lib/libgallium-<ver>.so      mega driver (prismrv entrypoint)"
-          echo "  usr/local/lib/libEGL.so.1              EGL (use EGL_PLATFORM=surfaceless)"
-          echo "  usr/local/lib/libexpat.so.1"
-          echo "  usr/local/include/                     EGL/GL/KHR headers"
+          echo "  usr/local/lib/libgallium-<ver>.so   mega driver (prismrv entrypoint)"
+          echo "  usr/local/lib/dri/prismrv_dri.so -> mega driver"
+          echo "  usr/local/lib/libEGL.so.1           EGL (use EGL_PLATFORM=surfaceless)"
+          echo "  usr/local/include/                  EGL/GL/KHR headers"
           echo ""
-          echo "The tarball is a plain sysroot tree; copy usr/ over /usr on the"
-          echo "tablet or point LD_LIBRARY_PATH/EGL_DRIVER at the lib dir."
+          echo "Copy usr/ over /usr on the tablet, or point LD_LIBRARY_PATH at the"
+          echo "lib dir. If the dri loader cannot find the driver:"
+          echo "  export LIBGL_DRIVERS_PATH=/usr/local/lib/dri"
         } > "${STAGE}/prismrv-mesa-README.txt"
         find "${STAGE}" -type f -o -type l | sort
 
