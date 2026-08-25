@@ -33,6 +33,7 @@ struct prismrv_vertex_element {
    unsigned src_offset;
    enum pipe_format src_format;
    unsigned vertex_buffer_index;
+   uint32_t src_stride;             /* stride to the same attrib in the next vertex */
 };
 
 struct prismrv_sampler_view {
@@ -59,6 +60,10 @@ struct prismrv_context {
    /* vertex elements */
    struct prismrv_vertex_element vertex_elements[8];
    unsigned num_vertex_elements;
+
+   /* bound vertex buffers (set_vertex_buffers) */
+   struct pipe_vertex_buffer vertex_buffers[8];
+   unsigned num_vertex_buffers;
 
    /* constant buffer data */
    float constants[4 * 64];    /* up to 64 vec4 uniforms */

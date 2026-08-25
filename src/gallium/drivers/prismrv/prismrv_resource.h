@@ -5,6 +5,8 @@
 #ifndef PRISMRV_RESOURCE_H_
 #define PRISMRV_RESOURCE_H_
 
+#include "pipe/p_state.h"
+
 struct prismrv_screen;
 
 void prismrv_resource_screen_init(struct prismrv_screen *screen);
@@ -17,6 +19,10 @@ unsigned long ALIGN(unsigned long x, unsigned long y);
 
 void prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
                                    struct prismrv_resource *res);
+
+/* CPU mapping of the backing GEM BO (created on demand) */
+void *
+prismrv_resource_map(struct pipe_resource *pres);
 
 #endif /* PRISMRV_RESOURCE_H_ */
 /* include prismrv_device.h for struct prismrv_resource definition */

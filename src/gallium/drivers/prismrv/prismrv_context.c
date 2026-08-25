@@ -9,15 +9,20 @@
 #include <sys/mman.h>
 
 #include "pipe/p_defines.h"
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 #include "util/u_blitter.h"
 #include "util/u_memory.h"
 #include "util/u_upload_mgr.h"
+#include "util/ralloc.h"
+#include "util/u_debug.h"
 
 #include "prismrv_batch.h"
 #include "prismrv_fence.h"
 #include "prismrv_drmif.h"
+#include "prismrv_resource.h"
 
 /* ---- flush ---------------------------------------------------------- */
 
@@ -118,6 +123,7 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    struct prismrv_screen *screen = ctx->screen;
    unsigned nverts, ncomp = 7;
    uint32_t ta_len;
+   float *verts = NULL;
 
    if (info->mode != MESA_PRIM_TRIANGLES || !ctx->num_vertex_elements)
       return;
@@ -129,29 +135,69 @@ prismrv_draw_vbo(struct pipe_context *pctx,
       nverts = 256;
 
    /* vertex data: positions and colors gathered from the bound vertex
-    * buffer (single interleaved buffer for now) */
+    * buffer(s).  Element 0 feeds positions, element 1 (if bound) feeds
+    * colours; both must be float3/float4 in the first vertex buffer. */
    {
-      float verts[256 * 7];
-      unsigned v, c;
-      for (v = 0; v < nverts; v++)
-         for (c = 0; c < ncomp; c++)
-            verts[v * ncomp + c] = 0.0f;
+      struct prismrv_vertex_element *pos_el = &ctx->vertex_elements[0];
+      struct prismrv_vertex_element *col_el = ctx->num_vertex_elements > 1 ?
+                                              &ctx->vertex_elements[1] : NULL;
+      struct pipe_vertex_buffer *vb_pos =
+         &ctx->vertex_buffers[pos_el->vertex_buffer_index];
+      struct pipe_vertex_buffer *vb_col =
+         col_el ? &ctx->vertex_buffers[col_el->vertex_buffer_index] : NULL;
+      const uint8_t *base_pos = NULL, *base_col = NULL;
 
-      /* build the layer-2 TA packet stream into the TA BO */
-      if (!ctx->batch.ta_handle) {
-         ctx->batch.ta_capacity = 64 * 1024;
-         ctx->batch.ta_handle =
-            prismrv_drm_gem_create(screen->fd, ctx->batch.ta_capacity);
-         ctx->batch.ta_map =
-            prismrv_drm_gem_map(screen->fd, ctx->batch.ta_handle,
-                                ctx->batch.ta_capacity);
-      }
-      if (!ctx->batch.ta_map || ctx->batch.ta_map == MAP_FAILED)
+      if (vb_pos && vb_pos->buffer.resource)
+         base_pos = prismrv_resource_map(vb_pos->buffer.resource);
+      if (vb_col && vb_col->buffer.resource)
+         base_col = prismrv_resource_map(vb_col->buffer.resource);
+      if (!base_pos)
+         return;
+      if (col_el && !base_col)
          return;
 
-      ta_len = prismrv_pack_ta_packets(
-         (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
-         verts, nverts, ncomp);
+      verts = calloc(nverts, ncomp * sizeof(float));
+      if (!verts)
+         return;
+
+      for (unsigned v = 0; v < nverts; v++) {
+         const float *p = (const void *)(base_pos + vb_pos->buffer_offset +
+                                         pos_el->src_offset +
+                                         (size_t)v * pos_el->src_stride);
+         const float *c = NULL;
+         float cf[4] = { 0.f, 0.f, 0.f, 1.f };
+
+         if (col_el && base_col) {
+            c = (const void *)(base_col + vb_col->buffer_offset +
+                               col_el->src_offset +
+                               (size_t)v * col_el->src_stride);
+            cf[0] = c[0]; cf[1] = c[1]; cf[2] = c[2]; cf[3] = c[3];
+         }
+         verts[v * ncomp + 0] = p[0];
+         verts[v * ncomp + 1] = p[1];
+         verts[v * ncomp + 2] = p[2];
+         memcpy(&verts[v * ncomp + 3], cf, sizeof(cf));
+      }
+   }
+
+   /* build the layer-2 TA packet stream into the TA BO */
+   if (!ctx->batch.ta_handle) {
+      ctx->batch.ta_capacity = 64 * 1024;
+      ctx->batch.ta_handle =
+         prismrv_drm_gem_create(screen->fd, ctx->batch.ta_capacity);
+      ctx->batch.ta_map =
+         prismrv_drm_gem_map(screen->fd, ctx->batch.ta_handle,
+                             ctx->batch.ta_capacity);
+   }
+   if (!ctx->batch.ta_map || ctx->batch.ta_map == MAP_FAILED) {
+      free(verts);
+      return;
+   }
+
+   ta_len = prismrv_pack_ta_packets(
+      (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
+      verts, nverts, ncomp);
+   free(verts);
 
       /* layer-1 stream in the cmd BO: SET_RT + DRAW */
       {
@@ -159,10 +205,21 @@ prismrv_draw_vbo(struct pipe_context *pctx,
                                       ctx->batch.cmd_size);
          const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
          uint32_t off = 0;
+         unsigned prog_words;
 
          /* SET_RT */
          out[off++] = 1; out[off++] = 2;
          out[off++] = fb->width; out[off++] = fb->height;
+
+         /* bound fragment shader as USSE text (SET_PROG_FS) */
+         if (ctx->fs.usse_text) {
+            prog_words = (strlen(ctx->fs.usse_text) + 4) / 4;
+            out[off++] = 3; out[off++] = prog_words;
+            memcpy(out + off, ctx->fs.usse_text,
+                   strlen(ctx->fs.usse_text) + 1);
+            off += prog_words;
+         }
+
          /* DRAW: userspace does not know GPU VAs (the kernel bump
           * allocator assigns them), so ta_va is left 0 here and the
           * kernel publishes the TA BO's GPU VA in CCB data[2]
@@ -175,7 +232,6 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          out[off++] = 6; out[off++] = 0;
 
          ctx->batch.cmd_size += off * 4;
-      }
    }
 }
 
@@ -238,13 +294,45 @@ prismrv_create_sampler_view(struct pipe_context *pctx,
 
 /* ---- lifecycle ------------------------------------------------------- */
 
+struct pipe_context *
+prismrv_context_create(struct pipe_screen *pscreen, void *priv,
+                       unsigned flags)
+{
+   struct prismrv_screen *screen = to_prismrv_screen(pscreen);
+   struct prismrv_context *ctx;
+
+   ctx = rzalloc(NULL, struct prismrv_context);
+   if (!ctx)
+      return NULL;
+
+   ctx->screen = screen;
+   ctx->base.screen = pscreen;
+   ctx->base.priv = priv;
+
+   prismrv_context_init(ctx);
+
+   /* command buffer for the layer-1 stream (SET_RT/DRAW/BARRIER) */
+   prismrv_batch_init_context(ctx);
+   if (!ctx->batch.cmd_handle || !ctx->batch.cmd_map ||
+       ctx->batch.cmd_map == MAP_FAILED) {
+      debug_printf("prismrv: failed to allocate the command buffer\n");
+      ctx->base.destroy(&ctx->base);
+      return NULL;
+   }
+
+   return &ctx->base;
+}
+
 static void
 prismrv_context_destroy(struct pipe_context *pctx)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
-   util_blitter_destroy(ctx->blitter);
-   u_upload_destroy(ctx->uploader);
+   /* blitter/uploader can be NULL when context creation failed early */
+   if (ctx->blitter)
+      util_blitter_destroy(ctx->blitter);
+   if (ctx->uploader)
+      u_upload_destroy(ctx->uploader);
    if (ctx->batch.cmd_map && ctx->batch.cmd_map != MAP_FAILED)
       munmap(ctx->batch.cmd_map, ctx->batch.cmd_capacity);
    if (ctx->batch.ta_map && ctx->batch.ta_map != MAP_FAILED)
@@ -305,6 +393,21 @@ prismrv_set_vertex_buffers(struct pipe_context *pctx,
                            unsigned start_slot,
                            const struct pipe_vertex_buffer *buffers)
 {
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+   unsigned i;
+
+   /* start_slot is always 0 in practice; take=unbinding when buffers==NULL */
+   for (i = 0; i < 8 && start_slot + i < 8; i++) {
+      const struct pipe_vertex_buffer *buf =
+         buffers ? &buffers[i] : NULL;
+
+      if (!buf || !buf->buffer.resource) {
+         memset(&ctx->vertex_buffers[start_slot + i], 0,
+                sizeof(ctx->vertex_buffers[0]));
+         continue;
+      }
+      ctx->vertex_buffers[start_slot + i] = *buf;
+   }
 }
 
 static void *
@@ -318,6 +421,7 @@ prismrv_create_vertex_elements(struct pipe_context *pctx,
       ctx->vertex_elements[i].src_offset = elems[i].src_offset;
       ctx->vertex_elements[i].src_format = elems[i].src_format;
       ctx->vertex_elements[i].vertex_buffer_index = elems[i].vertex_buffer_index;
+      ctx->vertex_elements[i].src_stride = elems[i].src_stride;
    }
    return (void *)(uintptr_t)(num_elems | 1);  /* non-NULL cookie */
 }
@@ -330,19 +434,6 @@ prismrv_bind_vertex_elements(struct pipe_context *pctx, void *state)
 static void
 prismrv_delete_vertex_elements(struct pipe_context *pctx, void *state)
 {
-}
-
-void
-prismrv_batch_init_context(struct prismrv_context *ctx)
-{
-   struct prismrv_screen *screen = ctx->screen;
-
-   ctx->batch.cmd_capacity = 4096;
-   ctx->batch.cmd_handle =
-      prismrv_drm_gem_create(screen->fd, ctx->batch.cmd_capacity);
-   ctx->batch.cmd_map =
-      prismrv_drm_gem_map(screen->fd, ctx->batch.cmd_handle,
-                          ctx->batch.cmd_capacity);
 }
 
 void

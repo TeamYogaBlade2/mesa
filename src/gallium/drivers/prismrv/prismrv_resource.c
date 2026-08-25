@@ -27,6 +27,23 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
    res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size);
 }
 
+void *
+prismrv_resource_map(struct pipe_resource *pres)
+{
+   struct prismrv_resource *res = to_prismrv_resource(pres);
+   struct prismrv_screen *screen = to_prismrv_screen(pres->screen);
+
+   if (!res->gem_handle)
+      prismrv_resource_allocate_gpu(screen, res);
+   if (!res->cpu_map || res->cpu_map == MAP_FAILED) {
+      res->cpu_map = prismrv_drm_gem_map(screen->fd, res->gem_handle,
+                                         res->size);
+      if (!res->cpu_map || res->cpu_map == MAP_FAILED)
+         return NULL;
+   }
+   return res->cpu_map;
+}
+
 static struct pipe_resource *
 prismrv_resource_create(struct pipe_screen *pscreen,
                         const struct pipe_resource *tmpl)

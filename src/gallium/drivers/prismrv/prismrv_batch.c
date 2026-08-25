@@ -6,15 +6,7 @@
  */
 #include "prismrv_batch.h"
 #include "prismrv_context.h"
-
-#include "util/u_memory.h"
-
 #include "prismrv_drmif.h"
-
-void
-prismrv_batch_init_context(struct prismrv_context *ctx)
-{
-}
 
 int
 prismrv_batch_submit(struct pipe_context *pctx,

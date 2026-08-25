@@ -10,6 +10,7 @@
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/eventfd.h>
 
 #include "drm-shim/drm_shim.h"
 #include "drm-uapi/prismrv_drm.h"
@@ -85,10 +86,21 @@ prismrv_ioctl_gem_mmap_offset(int fd, unsigned long request, void *arg)
    return 0;
 }
 
+static int
+prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
+{
+   struct drm_prismrv_submit *submit = arg;
+
+   /* complete immediately: hand out an eventfd as a signalled fence so
+    * that fence consumers see a ready sync point */
+   submit->out_fence_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+   return 0;
+}
+
 static ioctl_fn_t driver_ioctls[] = {
    [DRM_PRISMRV_GEM_CREATE]       = prismrv_ioctl_gem_create,
    [DRM_PRISMRV_GEM_MMAP_OFFSET]  = prismrv_ioctl_gem_mmap_offset,
-   [DRM_PRISMRV_SUBMIT]           = prismrv_ioctl_noop,
+   [DRM_PRISMRV_SUBMIT]           = prismrv_ioctl_submit,
    [DRM_PRISMRV_GET_PARAM]        = prismrv_ioctl_get_param,
 };
 
