@@ -212,6 +212,7 @@ jobs:
           -Dllvm=disabled \
           -Dshared-glapi=enabled \
           -Dxmlconfig=disabled \
+          -Dxlib-lease=disabled \
           -Dtools=[]
 
     - name: Build
