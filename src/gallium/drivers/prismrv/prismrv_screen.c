@@ -75,6 +75,17 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
          return false;
       }
    }
+   if (usage & PIPE_BIND_SAMPLER_VIEW) {
+      switch (format) {
+      case PIPE_FORMAT_B8G8R8A8_UNORM:
+      case PIPE_FORMAT_R8G8B8A8_UNORM:
+      case PIPE_FORMAT_R8G8B8_UNORM:
+      case PIPE_FORMAT_A8R8G8B8_UNORM:
+         break;
+      default:
+         return false;
+      }
+   }
 
    if (sample_count > 1)
       return false;

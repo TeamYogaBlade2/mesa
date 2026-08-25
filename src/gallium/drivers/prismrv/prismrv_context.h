@@ -40,6 +40,24 @@ struct prismrv_sampler_view {
    struct pipe_sampler_view base;
 };
 
+/* fixed-function state (shipped to the executor via SET_* packets) */
+struct prismrv_blend_state {
+   bool blend_enable;
+   unsigned rgb_func, rgb_src, rgb_dst;
+};
+
+struct prismrv_rasterizer_state {
+   bool scissor_enable;
+   unsigned cull_face;          /* PIPE_FACE_* */
+   bool front_ccw;
+};
+
+struct prismrv_depth_stencil_alpha_state {
+   bool depth_enabled;
+   bool depth_writemask;
+   unsigned depth_func;         /* PIPE_FUNC_* */
+};
+
 #define PRISMRV_MAX_VIEWPORTS 16
 
 struct prismrv_context {
@@ -56,6 +74,14 @@ struct prismrv_context {
    /* bound shaders */
    struct prismrv_shader_state vs;
    struct prismrv_shader_state fs;
+
+   /* fixed-function state */
+   struct prismrv_blend_state blend;
+   struct prismrv_rasterizer_state raster;
+   struct prismrv_depth_stencil_alpha_state depth;
+
+   /* bound texture views (slot -> resource), consumed by SET_TEXTURE */
+   struct prismrv_resource *textures[8];
 
    /* vertex elements */
    struct prismrv_vertex_element vertex_elements[8];

@@ -23,6 +23,7 @@
 #include "prismrv_fence.h"
 #include "prismrv_drmif.h"
 #include "prismrv_resource.h"
+#include "prismrv_program.h"
 
 /* ---- flush ---------------------------------------------------------- */
 
@@ -82,6 +83,7 @@ prismrv_invalidate_resource(struct pipe_context *pctx,
  *     5 DRAW         {ta_va(u64), ta_len(u32), first(u32)} — ta_va is the
  *                    GPU VA of a BO holding the layer-2 TA packets
  *     6 BARRIER      -
+ *     7 SET_TEXTURE  {slot(u32), w(u32), h(u32), gem_handle(u32)}
  *
  *   layer 2 (TA packet BO, parsed by the binner / ta_stage.py):
  *     [u32 opcode][u32 words][payload...] with opcodes
@@ -92,13 +94,13 @@ prismrv_invalidate_resource(struct pipe_context *pctx,
 static uint32_t
 prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
                         const float *verts, unsigned nverts,
-                        unsigned ncomp)
+                        unsigned ncomp, unsigned mode)
 {
    uint32_t off = 0;
    uint32_t nw = nverts * ncomp;
 
-   /* VGT_STATE: triangles */
-   buf[off++] = 1; buf[off++] = 1; buf[off++] = 2;
+   /* VGT_STATE: mode 0=points 1=lines 2=triangles (ta_stage.py) */
+   buf[off++] = 1; buf[off++] = 1; buf[off++] = mode;
    /* INDEX_RANGE */
    buf[off++] = 2; buf[off++] = 2; buf[off++] = 0; buf[off++] = nverts;
    /* VERTEX_ARRAY: inline float data after the 3-word header */
@@ -125,8 +127,23 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    uint32_t ta_len;
    float *verts = NULL;
 
-   if (info->mode != MESA_PRIM_TRIANGLES || !ctx->num_vertex_elements)
+   if ((info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_LINES &&
+        info->mode != MESA_PRIM_POINTS) || !ctx->num_vertex_elements)
       return;
+
+   /* indexed draw: expand the index buffer into a vertex list first */
+   const uint32_t *indices = NULL;
+   unsigned index_size = 0;
+
+   if (info->index_size) {
+      if (info->has_user_indices)
+         indices = (const uint32_t *)info->index.user;
+      else if (info->index.resource)
+         indices = (const uint32_t *)prismrv_resource_map(info->index.resource);
+      if (!indices)
+         return;
+      index_size = info->index_size;
+   }
 
    nverts = draws->count;
    if (nverts < 3)
@@ -161,16 +178,25 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          return;
 
       for (unsigned v = 0; v < nverts; v++) {
+         unsigned src = v;
+
+         if (index_size == 4)
+            src = indices[draws->start + v];
+         else if (index_size == 2)
+            src = ((const uint16_t *)indices)[draws->start + v];
+         else if (index_size == 1)
+            src = ((const uint8_t *)indices)[draws->start + v];
+
          const float *p = (const void *)(base_pos + vb_pos->buffer_offset +
                                          pos_el->src_offset +
-                                         (size_t)v * pos_el->src_stride);
+                                         (size_t)src * pos_el->src_stride);
          const float *c = NULL;
          float cf[4] = { 0.f, 0.f, 0.f, 1.f };
 
          if (col_el && base_col) {
             c = (const void *)(base_col + vb_col->buffer_offset +
                                col_el->src_offset +
-                               (size_t)v * col_el->src_stride);
+                               (size_t)src * col_el->src_stride);
             cf[0] = c[0]; cf[1] = c[1]; cf[2] = c[2]; cf[3] = c[3];
          }
          verts[v * ncomp + 0] = p[0];
@@ -194,12 +220,17 @@ prismrv_draw_vbo(struct pipe_context *pctx,
       return;
    }
 
-   ta_len = prismrv_pack_ta_packets(
-      (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
-      verts, nverts, ncomp);
+   {
+      unsigned mode = info->mode == MESA_PRIM_POINTS ? 0 :
+                      info->mode == MESA_PRIM_LINES ? 1 : 2;
+
+      ta_len = prismrv_pack_ta_packets(
+         (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
+         verts, nverts, ncomp, mode);
+   }
    free(verts);
 
-      /* layer-1 stream in the cmd BO: SET_RT + DRAW */
+      /* layer-1 stream in the cmd BO: SET_RT + SET_PROG_* + DRAW */
       {
          uint32_t *out = (uint32_t *)((uint8_t *)ctx->batch.cmd_map +
                                       ctx->batch.cmd_size);
@@ -211,13 +242,46 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          out[off++] = 1; out[off++] = 2;
          out[off++] = fb->width; out[off++] = fb->height;
 
+         /* bound vertex shader as USSE text (SET_PROG_VS) */
+         if (ctx->vs.usse_text) {
+            prog_words = (ctx->vs.usse_len + 4) / 4;
+            out[off++] = 2; out[off++] = prog_words;
+            memcpy(out + off, ctx->vs.usse_text, ctx->vs.usse_len + 1);
+            memset((uint8_t *)out + off * 4 + ctx->vs.usse_len + 1,
+                   0, prog_words * 4 - ctx->vs.usse_len - 1);
+            off += prog_words;
+         }
+
          /* bound fragment shader as USSE text (SET_PROG_FS) */
          if (ctx->fs.usse_text) {
-            prog_words = (strlen(ctx->fs.usse_text) + 4) / 4;
+            prog_words = (ctx->fs.usse_len + 4) / 4;
             out[off++] = 3; out[off++] = prog_words;
-            memcpy(out + off, ctx->fs.usse_text,
-                   strlen(ctx->fs.usse_text) + 1);
+            memcpy(out + off, ctx->fs.usse_text, ctx->fs.usse_len + 1);
+            memset((uint8_t *)out + off * 4 + ctx->fs.usse_len + 1,
+                   0, prog_words * 4 - ctx->fs.usse_len - 1);
             off += prog_words;
+         }
+
+         /* uniforms currently bound through set_constant_buffer */
+         if (ctx->num_constants) {
+            unsigned nwords = ctx->num_constants * 4;
+            out[off++] = 4; out[off++] = nwords;
+            memcpy(out + off, ctx->constants, nwords * 4);
+            off += nwords;
+         }
+
+         /* bound textures: {slot(u32), w, h, gem_handle} per view.
+          * The executor maps the handle to pixels for `smp`. */
+         for (unsigned t = 0; t < 8; t++) {
+            struct prismrv_resource *tex = ctx->textures[t];
+
+            if (!tex || !tex->cpu_map)
+               continue;
+            out[off++] = 7; out[off++] = 4;
+            out[off++] = t;
+            out[off++] = tex->base.width0;
+            out[off++] = tex->base.height0;
+            out[off++] = tex->gem_handle;
          }
 
          /* DRAW: userspace does not know GPU VAs (the kernel bump
@@ -261,11 +325,121 @@ prismrv_set_scissor_states(struct pipe_context *pctx,
 {
 }
 
+/* ---- fixed-function state -------------------------------------------- */
+
+#define BLEND_FACTOR(f) ((uint32_t)(f) & 0xf)
+static void *
+prismrv_create_blend_state(struct pipe_context *pctx,
+                           const struct pipe_blend_state *tmpl)
+{
+   struct prismrv_blend_state *s = CALLOC_STRUCT(prismrv_blend_state);
+   if (!s)
+      return NULL;
+   s->blend_enable = tmpl->rt[0].blend_enable;
+   s->rgb_func = tmpl->rt[0].rgb_func;
+   s->rgb_src = tmpl->rt[0].rgb_src_factor;
+   s->rgb_dst = tmpl->rt[0].rgb_dst_factor;
+   return s;
+}
+
+static void
+prismrv_bind_blend_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   if (state)
+      memcpy(&ctx->blend, state, sizeof(ctx->blend));
+}
+
+static void
+prismrv_delete_blend_state(struct pipe_context *pctx, void *state)
+{
+   FREE(state);
+}
+
+static void *
+prismrv_create_rasterizer_state(struct pipe_context *pctx,
+                                const struct pipe_rasterizer_state *tmpl)
+{
+   struct prismrv_rasterizer_state *s =
+      CALLOC_STRUCT(prismrv_rasterizer_state);
+   if (!s)
+      return NULL;
+   s->scissor_enable = tmpl->scissor;
+   s->cull_face = tmpl->cull_face;
+   s->front_ccw = tmpl->front_ccw;
+   return s;
+}
+
+static void
+prismrv_bind_rasterizer_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   if (state)
+      memcpy(&ctx->raster, state, sizeof(ctx->raster));
+}
+
+static void
+prismrv_delete_rasterizer_state(struct pipe_context *pctx, void *state)
+{
+   FREE(state);
+}
+
+static void *
+prismrv_create_depth_stencil_alpha_state(
+   struct pipe_context *pctx,
+   const struct pipe_depth_stencil_alpha_state *tmpl)
+{
+   struct prismrv_depth_stencil_alpha_state *s =
+      CALLOC_STRUCT(prismrv_depth_stencil_alpha_state);
+   if (!s)
+      return NULL;
+   s->depth_enabled = tmpl->depth_enabled;
+   s->depth_writemask = tmpl->depth_writemask;
+   s->depth_func = tmpl->depth_func;
+   return s;
+}
+
+static void
+prismrv_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   if (state)
+      memcpy(&ctx->depth, state, sizeof(ctx->depth));
+}
+
+static void
+prismrv_delete_depth_stencil_alpha_state(struct pipe_context *pctx, void *state)
+{
+   FREE(state);
+}
+
 static void
 prismrv_set_constant_buffer(struct pipe_context *pctx,
                             mesa_shader_stage shader, uint index,
                             const struct pipe_constant_buffer *cb)
 {
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   /* only the (single) uniform block of the vertex/fragment stages is
+    * modelled; uniforms ship as raw f32 vec4s in SET_UNIFORMS */
+   if (index != 0 || !cb || !cb->buffer)
+      return;
+
+   {
+      const float *data = prismrv_resource_map(cb->buffer);
+      unsigned nvec4 = cb->buffer_size / 16;
+
+      if (!data)
+         return;
+      if (nvec4 > ARRAY_SIZE(ctx->constants) / 4)
+         nvec4 = ARRAY_SIZE(ctx->constants) / 4;
+      memcpy(ctx->constants,
+             data + cb->buffer_offset / 4, nvec4 * 16);
+      ctx->num_constants = nvec4;
+   }
 }
 
 static void
@@ -290,6 +464,54 @@ prismrv_create_sampler_view(struct pipe_context *pctx,
    so->base.reference.count = 1;
    so->base.context = pctx;
    return &so->base;
+}
+
+static void
+prismrv_bind_sampler_states(struct pipe_context *pctx,
+                            mesa_shader_stage shader,
+                            unsigned start_slot, unsigned num_samplers,
+                            void **samplers)
+{
+   /* sampler objects (filters/wrap) have no emulator equivalent:
+    * smp is nearest+clamp only.  Accepted and ignored. */
+}
+
+static void *
+prismrv_create_sampler_state(struct pipe_context *pctx,
+                             const struct pipe_sampler_state *tmpl)
+{
+   return CALLOC_STRUCT(prismrv_blend_state); /* opaque cookie */
+}
+
+static void
+prismrv_delete_sampler_state(struct pipe_context *pctx, void *state)
+{
+   FREE(state);
+}
+
+static void
+prismrv_set_sampler_views(struct pipe_context *pctx,
+                          mesa_shader_stage shader,
+                          unsigned start_slot, unsigned num_views,
+                          unsigned unbind_num_trailing_slots,
+                          struct pipe_sampler_view **views)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   for (unsigned i = 0; i < num_views && start_slot + i < 8; i++) {
+      struct prismrv_sampler_view *sv =
+         views ? (struct prismrv_sampler_view *)views[i] : NULL;
+
+      if (!sv || !sv->base.texture) {
+         ctx->textures[start_slot + i] = NULL;
+         continue;
+      }
+      ctx->textures[start_slot + i] =
+         to_prismrv_resource(sv->base.texture);
+      /* nearest sampling needs the CPU mapping of the texture BO */
+      if (!ctx->textures[start_slot + i]->cpu_map)
+         prismrv_resource_map(sv->base.texture);
+   }
 }
 
 /* ---- lifecycle ------------------------------------------------------- */
@@ -356,7 +578,16 @@ static void
 prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
+   struct prismrv_shader_state *s = state;
+
    memcpy(&ctx->vs, state, sizeof(ctx->vs));
+
+   /* compile NIR → USSE once at bind time (draw_vbo only ships text) */
+   if (s && s->nir && !s->usse_text) {
+      s->usse_text =
+         prismrv_nir_to_usse(pctx, (nir_shader *)s->nir);
+      s->usse_len = strlen(s->usse_text);
+   }
 }
 
 static void
@@ -379,7 +610,15 @@ static void
 prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
+   struct prismrv_shader_state *s = state;
+
    memcpy(&ctx->fs, state, sizeof(ctx->fs));
+
+   if (s && s->nir && !s->usse_text) {
+      s->usse_text =
+         prismrv_nir_to_usse(pctx, (nir_shader *)s->nir);
+      s->usse_len = strlen(s->usse_text);
+   }
 }
 
 static void
@@ -462,6 +701,22 @@ prismrv_context_init(struct prismrv_context *ctx)
    pctx->create_vertex_elements_state = prismrv_create_vertex_elements;
    pctx->bind_vertex_elements_state = prismrv_bind_vertex_elements;
    pctx->delete_vertex_elements_state = prismrv_delete_vertex_elements;
+   pctx->create_blend_state = prismrv_create_blend_state;
+   pctx->bind_blend_state = prismrv_bind_blend_state;
+   pctx->delete_blend_state = prismrv_delete_blend_state;
+   pctx->create_rasterizer_state = prismrv_create_rasterizer_state;
+   pctx->bind_rasterizer_state = prismrv_bind_rasterizer_state;
+   pctx->delete_rasterizer_state = prismrv_delete_rasterizer_state;
+   pctx->create_depth_stencil_alpha_state =
+      prismrv_create_depth_stencil_alpha_state;
+   pctx->bind_depth_stencil_alpha_state =
+      prismrv_bind_depth_stencil_alpha_state;
+   pctx->delete_depth_stencil_alpha_state =
+      prismrv_delete_depth_stencil_alpha_state;
+   pctx->create_sampler_state = prismrv_create_sampler_state;
+   pctx->bind_sampler_states = prismrv_bind_sampler_states;
+   pctx->delete_sampler_state = prismrv_delete_sampler_state;
+   pctx->set_sampler_views = prismrv_set_sampler_views;
 
    ctx->uploader = u_upload_create_default(pctx);
    if (!ctx->uploader)

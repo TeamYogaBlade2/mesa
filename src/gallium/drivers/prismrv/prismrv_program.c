@@ -64,6 +64,7 @@ emit_def(char *buf, size_t len, unsigned base, const nir_def *def)
 struct emit_ctx {
    char *out;                /* ralloc'd string being built */
    struct regmap rm;
+   enum mesa_shader_stage stage;
 };
 
 static void
@@ -133,6 +134,32 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
 }
 
 static void
+emit_tex(struct emit_ctx *c, nir_tex_instr *tex)
+{
+   /* texture sample: source 0 = coordinate (vec2), result -> SSA regs.
+    * Emits the emulator's `smp dst, uvReg, idReg` (nearest, 2D only).
+    * The texture id is passed as an immediate: the executor registers
+    * bound textures by index. */
+   nir_src *coord = NULL;
+   int base = -1;
+
+   for (unsigned i = 0; i < tex->num_srcs; i++) {
+      if (tex->src[i].src_type == nir_tex_src_coord)
+         coord = &tex->src[i].src;
+   }
+   if (!coord || tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D) {
+      fprintf(stderr, "prismrv: unsupported tex op %d\n", tex->op);
+      return;
+   }
+
+   base = ssa_base(&c->rm, &tex->def);
+   emit_line(c, "smp r%u, r%u, #%u",
+             base,
+             ssa_base(&c->rm, coord->ssa),
+             tex->texture_index);
+}
+
+static void
 emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
 {
    /* loads are no-ops in the text form: the emulator preloads uniforms
@@ -146,11 +173,21 @@ emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
       unsigned base = ssa_base(&c->rm, val);
       unsigned mask = nir_intrinsic_write_mask(intr);
       unsigned comps = val->num_components;
+      /* driver location: 0 = colour (FS) / clip position (VS) */
+      unsigned loc = nir_intrinsic_base(intr);
 
       for (unsigned ch = 0; ch < comps && ch < 4; ch++) {
          if (!(mask & (1u << ch)))
             continue;
-         emit_line(c, "vmov o%u, r%u, swizzle(xxxx)", ch, base + ch);
+         if (c->stage == MESA_SHADER_VERTEX && loc == 0)
+            /* VS: o0..3 = clip position, o4.. = varyings
+             * (ta_stage.py _fetch_vertices convention) */
+            emit_line(c, "vmov o%u, r%u, swizzle(xxxx)", ch, base + ch);
+         else
+            emit_line(c, "vmov o%u, r%u, swizzle(xxxx)",
+                      c->stage == MESA_SHADER_FRAGMENT ? ch
+                                                       : 4 + ch,
+                      base + ch);
       }
       break;
    }
@@ -167,6 +204,7 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
    memset(&ctx, 0, sizeof(ctx));
    /* ralloc_strcat() requires a non-NULL destination string */
    ctx.out = ralloc_strdup(memctx, "");
+   ctx.stage = nir->info.stage;
 
    emit_line(&ctx, "# %s shader", mesa_shader_stage_name(nir->info.stage));
 
@@ -180,6 +218,9 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
                break;
             case nir_instr_type_intrinsic:
                emit_intrinsic(&ctx, nir_instr_as_intrinsic(instr));
+               break;
+            case nir_instr_type_tex:
+               emit_tex(&ctx, nir_instr_as_tex(instr));
                break;
             default:
                break;
