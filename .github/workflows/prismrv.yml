@@ -132,6 +132,7 @@ jobs:
                  libxcb-randr0 libxcb-randr0-dev \
                  libx11-6 libx11-dev libx11-xcb1 libx11-xcb-dev \
                  libxau6 libxau-dev libxdmcp6 libxdmcp-dev \
+                 x11proto-dev \
                  libxshmfence1 libxshmfence-dev \
                  libbsd0 libmd0 libpthread-stubs0-dev; do
           apt-get download "$p" \
