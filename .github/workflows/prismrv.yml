@@ -120,7 +120,20 @@ jobs:
           -o Dir::Cache=/tmp/armhf-apt/cache \
           -o Dir::State::status=/tmp/armhf-apt/status
         cd /tmp/armhf-apt
-        for p in libdrm2 libdrm-dev libdrm-nouveau2 libdrm-radeon1 libdrm-amdgpu1 zlib1g zlib1g-dev; do
+        # libdrm/zlib: link deps. xcb/x11 family: needed once -Dplatforms=x11
+        # is on (src/meson.build only builds the dril dri target then, which
+        # carries the __driDriverGetExtensions_prismrv entrypoint)
+        for p in libdrm2 libdrm-dev libdrm-nouveau2 libdrm-radeon1 libdrm-amdgpu1 \
+                 zlib1g zlib1g-dev \
+                 libxcb1 libxcb1-dev libx11-xcb1 libx11-xcb-dev \
+                 libxcb-dri3-0 libxcb-dri3-dev libxcb-present0 libxcb-present-dev \
+                 libxcb-shm0 libxcb-shm0-dev libxcb-sync1 libxcb-sync-dev \
+                 libxcb-xfixes0 libxcb-xfixes0-dev \
+                 libxcb-randr0 libxcb-randr0-dev \
+                 libx11-6 libx11-dev libx11-xcb1 libx11-xcb-dev \
+                 libxau6 libxau-dev libxdmcp6 libxdmcp-dev \
+                 libxshmfence1 libxshmfence-dev \
+                 libbsd0 libmd0 libpthread-stubs0-dev; do
           apt-get download "$p" \
             -o APT::Architecture=armhf \
             -o APT::Architectures=armhf \
@@ -186,7 +199,7 @@ jobs:
           -Dgallium-extra-hud=false \
           -Dvulkan-drivers=[] \
           -Dglx=disabled \
-          -Dplatforms=[] \
+          -Dplatforms=x11 \
           -Degl=enabled \
           -Dgbm=disabled \
           -Dopengl=true \
@@ -204,15 +217,20 @@ jobs:
       run: |
         meson install -C build-arm --destdir stage
         STAGE="$(pwd)/build-arm/stage"
-        # dril (which normally installs <libdir>/dri/*_dri.so) is only built
-        # with glx=dri or platforms=x11; we are surfaceless-only, so recreate
-        # the distro layout ourselves from the megadriver
-        GALLIUM_SO="$(basename "$(find "${STAGE}" -name 'libgallium-*.so' | head -1)")"
-        test -n "${GALLIUM_SO}"
-        mkdir -p "${STAGE}/usr/local/lib/dri"
-        ln -sf "../${GALLIUM_SO}" "${STAGE}/usr/local/lib/dri/prismrv_dri.so"
+        # dril installs <libdir>/dri/<name>_dri.so as copies of its own
+        # megadriver; with -Dplatforms=x11 it is built and carries the
+        # __driDriverGetExtensions_prismrv entrypoint. Verify, and fall back
+        # to a symlink of the gallium megadriver if it is missing.
+        if ! find "${STAGE}" -name 'prismrv_dri.so' | grep -q .; then
+          GALLIUM_SO="$(basename "$(find "${STAGE}" -name 'libgallium-*.so' | head -1)")"
+          test -n "${GALLIUM_SO}"
+          mkdir -p "${STAGE}/usr/local/lib/dri"
+          ln -sf "../${GALLIUM_SO}" "${STAGE}/usr/local/lib/dri/prismrv_dri.so"
+        fi
+        PRISMRV_SO="$(find "${STAGE}" -name 'prismrv_dri.so' | head -1)"
+        test -n "${PRISMRV_SO}"
         # fatal if the loader entrypoint is not exported
-        arm-linux-gnueabihf-nm -D "${STAGE}/usr/local/lib/${GALLIUM_SO}" > /tmp/nm.txt
+        arm-linux-gnueabihf-nm -D "${PRISMRV_SO}" > /tmp/nm.txt
         grep -F '__driDriverGetExtensions_prismrv' /tmp/nm.txt \
           || { echo "prismrv entrypoint missing; dynamic symbols:"; cat /tmp/nm.txt; exit 1; }
         SHORT_SHA="${GITHUB_SHA::7}"
@@ -222,8 +240,8 @@ jobs:
           echo "Target  : Lenovo Yoga Tablet 8 B8000-F (MT6589 / SGX544)"
           echo "ABI     : linux armv7-a + NEON, hard-float"
           echo "Source  : teamYogaBlade2/mesa @ prismrv-oxalpha, commit ${GITHUB_SHA}"
-          echo "Options : gallium-drivers=prismrv, egl=enabled (surfaceless/dri2 platform),"
-          echo "          glx/gbm/xmlconfig disabled"
+          echo "Options : gallium-drivers=prismrv, egl=enabled, platforms=x11,"
+          echo "          glx/gbm/xmlconfig disabled (surfaceless still usable)"
           echo ""
           echo "Layout:"
           echo "  usr/local/lib/libgallium-<ver>.so   mega driver (prismrv entrypoint)"
@@ -262,8 +280,8 @@ jobs:
           - branch: prismrv-oxalpha
           - commit: ${{ github.sha }}
           - target: linux armv7-a hard-float (NEON)
-          - contents: libgallium (prismrv dri entrypoint), libEGL.so.1
-            (surfaceless/dri2), libexpat, EGL/GL headers
+          - contents: prismrv_dri.so (dri driver), libEGL.so.1 (x11 +
+            surfaceless platforms), libgallium, EGL/GL headers
 
           Unpack and copy usr/ over /usr, or point LD_LIBRARY_PATH at the
           lib directory. Use EGL_PLATFORM=surfaceless.
