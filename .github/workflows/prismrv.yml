@@ -43,13 +43,14 @@ jobs:
           -Dvulkan-drivers=[] \
           -Dglx=disabled \
           -Dplatforms=[] \
-          -Degl=disabled \
+          -Degl=enabled \
           -Dgbm=disabled \
           -Dopengl=true \
           -Dgles1=disabled \
-          -Dgles2=disabled \
+          -Dgles2=enabled \
           -Dllvm=disabled \
           -Dshared-glapi=enabled \
+          -Dxmlconfig=disabled \
           -Dtools=drm-shim \
           -Dbuild-tests=true
 
@@ -63,6 +64,21 @@ jobs:
 
     - name: Run prismrv NIR test
       run: meson test -C build prismrv-nir --print-errorlogs
+
+    - name: drm-shim smoke test (EGL surfaceless + real driver)
+      run: |
+        meson test -C build prismrv-smoke --print-errorlogs || {
+          echo "::warning::smoke test failed — retrying with debug output"
+          # run the binary directly to capture the shim/driver logs
+          LD_PRELOAD=$(ls build/src/gallium/drivers/prismrv/*.so \
+                         build/src/gallium/drivers/prismrv/drm-shim/*.so 2>/dev/null | head -1) \
+          EGL_PLATFORM=surfaceless \
+          MESA_LOADER_DRIVER_OVERRIDE=prismrv \
+          DRM_SHIM_DEBUG=1 \
+          LIBGL_DEBUG=verbose MESA_DEBUG=1 \
+          ./build/src/gallium/drivers/prismrv/tests/prismrv_smoke || true
+          exit 1
+        }
 
   syntax-only:
     runs-on: ubuntu-22.04

@@ -34,6 +34,10 @@ if with_tools.contains('drm-shim')
   subdir('drm-shim')
 endif
 
+if with_tests
+  subdir('tests')
+endif
+
 driver_prismrv = declare_dependency(
   compile_args : [],
   link_with : libprismrv,
