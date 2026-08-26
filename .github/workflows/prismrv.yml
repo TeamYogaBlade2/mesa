@@ -33,6 +33,7 @@ jobs:
         sudo apt-get install -y \
           bison flex ninja-build pkg-config \
           libdrm-dev libexpat1-dev zlib1g-dev \
+          libegl1-mesa-dev libgles2-mesa-dev libglvnd-dev \
         && python3 -m pip install mako meson pyyaml ply
 
     - name: Configure (prismrv only, minimal)
