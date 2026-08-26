@@ -29,9 +29,6 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 
-/* from libdril_dri.so via the loader; we just need any GL context */
-
-static int submit_count;
 
 static const char *vs_src =
    "attribute vec4 a_position;\n"
@@ -75,8 +72,15 @@ main(void)
       EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
       EGL_NONE,
    };
-   EGLDisplay dpy = eglGetPlatformDisplayEXT(EGL_PLATFORM_SURFACELESS_MESA,
-                                             EGL_DEFAULT_DISPLAY, NULL);
+   PFNEGLGETPLATFORMDISPLAYEXTPROC get_platform_display =
+      (PFNEGLGETPLATFORMDISPLAYEXTPROC)
+      eglGetProcAddress("eglGetPlatformDisplayEXT");
+   if (!get_platform_display) {
+      fprintf(stderr, "SMOKE: no eglGetPlatformDisplayEXT\n");
+      return 77;
+   }
+   EGLDisplay dpy = get_platform_display(EGL_PLATFORM_SURFACELESS_MESA,
+                                         EGL_DEFAULT_DISPLAY, NULL);
    if (dpy == EGL_NO_DISPLAY) {
       fprintf(stderr, "SMOKE: no surfaceless EGL display\n");
       return 77;
