@@ -484,6 +484,8 @@ static void
 prismrv_sampler_view_destroy(struct pipe_context *pctx,
                              struct pipe_sampler_view *view)
 {
+   if (view->texture)
+      pipe_resource_reference(&view->texture, NULL);
    FREE(view);
 }
 
@@ -597,8 +599,19 @@ prismrv_context_destroy(struct pipe_context *pctx)
       munmap(ctx->batch.cmd_map, ctx->batch.cmd_capacity);
    if (ctx->batch.ta_map && ctx->batch.ta_map != MAP_FAILED)
       munmap(ctx->batch.ta_map, ctx->batch.ta_capacity);
+   if (ctx->batch.cmd_handle) {
+      /* GEM handles are per-context resources: close them so the
+       * kernel can reclaim the BOs (drm close does this too, but be
+       * explicit in case the fd is shared) */
+      struct prismrv_screen *screen = ctx->screen;
+      if (ctx->batch.ta_handle)
+         prismrv_drm_gem_close(screen->fd, ctx->batch.ta_handle);
+      prismrv_drm_gem_close(screen->fd, ctx->batch.cmd_handle);
+   }
 
-   FREE(ctx);
+   /* the context itself is ralloc'd (see prismrv_context_create);
+    * FREE() here would corrupt the heap */
+   ralloc_free(ctx);
 }
 
 static void *
@@ -618,14 +631,16 @@ prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    struct prismrv_shader_state *s = state;
 
-   memcpy(&ctx->vs, state, sizeof(ctx->vs));
-
-   /* compile NIR → USSE once at bind time (draw_vbo only ships text) */
+   /* compile NIR → USSE first so the copy below carries the text
+    * (the old order left ctx->vs.usse_text NULL until the next bind,
+    * making the first draw run with the previous shader) */
    if (s && s->nir && !s->usse_text) {
       s->usse_text =
-         prismrv_nir_to_usse(pctx, (nir_shader *)s->nir);
+         prismrv_nir_to_usse(s, (nir_shader *)s->nir);
       s->usse_len = strlen(s->usse_text);
    }
+
+   memcpy(&ctx->vs, state, sizeof(ctx->vs));
 }
 
 static void
@@ -650,13 +665,13 @@ prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    struct prismrv_shader_state *s = state;
 
-   memcpy(&ctx->fs, state, sizeof(ctx->fs));
-
    if (s && s->nir && !s->usse_text) {
       s->usse_text =
-         prismrv_nir_to_usse(pctx, (nir_shader *)s->nir);
+         prismrv_nir_to_usse(s, (nir_shader *)s->nir);
       s->usse_len = strlen(s->usse_text);
    }
+
+   memcpy(&ctx->fs, state, sizeof(ctx->fs));
 }
 
 static void
@@ -667,23 +682,23 @@ prismrv_delete_fs_state(struct pipe_context *pctx, void *state)
 
 static void
 prismrv_set_vertex_buffers(struct pipe_context *pctx,
-                           unsigned start_slot,
+                           unsigned count,
                            const struct pipe_vertex_buffer *buffers)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    unsigned i;
 
-   /* start_slot is always 0 in practice; take=unbinding when buffers==NULL */
-   for (i = 0; i < 8 && start_slot + i < 8; i++) {
-      const struct pipe_vertex_buffer *buf =
-         buffers ? &buffers[i] : NULL;
-
-      if (!buf || !buf->buffer.resource) {
-         memset(&ctx->vertex_buffers[start_slot + i], 0,
-                sizeof(ctx->vertex_buffers[0]));
+   /* count is the number of buffers in the array; buffers == NULL
+    * unbinds everything */
+   memset(ctx->vertex_buffers, 0, sizeof(ctx->vertex_buffers));
+   ctx->num_vertex_buffers = 0;
+   if (!buffers)
+      return;
+   for (i = 0; i < count && i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
+      if (!buffers[i].buffer.resource)
          continue;
-      }
-      ctx->vertex_buffers[start_slot + i] = *buf;
+      ctx->vertex_buffers[i] = buffers[i];
+      ctx->num_vertex_buffers = i + 1;
    }
 }
 

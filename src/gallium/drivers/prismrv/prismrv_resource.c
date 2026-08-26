@@ -10,6 +10,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+#include "util/u_math.h"
 #include "util/u_memory.h"
 #include "util/u_transfer.h"
 #include "util/u_transfer_helper.h"
@@ -23,7 +24,8 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
 {
    if (res->gem_handle)
       return;
-   res->size = ALIGN(res->base.width0 * res->base.height0 * 4, 4096);
+   res->size = align64(res->base.width0 * res->base.height0 * 4, 4096);
+   res->fd = screen->fd;
    res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size);
 }
 
@@ -85,6 +87,10 @@ prismrv_resource_destroy(struct pipe_screen *pscreen,
 
    if (res->cpu_map && res->cpu_map != MAP_FAILED)
       munmap(res->cpu_map, res->size);
+   /* close the GEM handle: without this every texture/RT leaks a BO
+    * until the fd is closed */
+   if (res->gem_handle)
+      prismrv_drm_gem_close(pscreen ? 0 : 0, res->gem_handle);
    FREE(res);
 }
 

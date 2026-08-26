@@ -48,6 +48,23 @@ prismrv_drm_gem_create(int fd, uint64_t size)
    return c.handle;
 }
 
+/* DRM_IOCTL_GEM_CLOSE: _IOWR('d', 0x09, struct drm_gem_close) */
+#define DRM_GEM_CLOSE_HANDLE 0x09
+#ifndef DRM_IOCTL_BASE
+#define DRM_IOCTL_BASE 'd'
+#endif
+
+void
+prismrv_drm_gem_close(int fd, uint32_t handle)
+{
+   /* struct drm_gem_close { __u32 handle; __u32 pad; }; — 8 bytes */
+   uint32_t arg[2] = { handle, 0 };
+   unsigned long nr = (3u << 30) | (sizeof(arg) << 16) |
+                      ((unsigned long)DRM_IOCTL_BASE << 8) |
+                      DRM_GEM_CLOSE_HANDLE;
+   ioctl(fd, nr, arg);
+}
+
 void *
 prismrv_drm_gem_map(int fd, uint32_t handle, uint64_t size)
 {

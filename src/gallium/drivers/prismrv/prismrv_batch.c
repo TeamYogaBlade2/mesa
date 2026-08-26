@@ -8,6 +8,21 @@
 #include "prismrv_context.h"
 #include "prismrv_drmif.h"
 
+void
+prismrv_batch_init_context(struct prismrv_context *ctx)
+{
+   struct prismrv_screen *screen = ctx->screen;
+
+   ctx->batch.cmd_capacity = 64 * 1024;
+   ctx->batch.cmd_handle =
+      prismrv_drm_gem_create(screen->fd, ctx->batch.cmd_capacity);
+   if (!ctx->batch.cmd_handle)
+      return;
+   ctx->batch.cmd_map =
+      prismrv_drm_gem_map(screen->fd, ctx->batch.cmd_handle,
+                          ctx->batch.cmd_capacity);
+}
+
 int
 prismrv_batch_submit(struct pipe_context *pctx,
                      enum prismrv_cmd_type type,

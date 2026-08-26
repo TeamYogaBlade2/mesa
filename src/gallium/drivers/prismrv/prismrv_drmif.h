@@ -9,6 +9,7 @@
 
 uint64_t prismrv_drm_get_param(int fd, uint32_t param);
 uint32_t prismrv_drm_gem_create(int fd, uint64_t size);
+void prismrv_drm_gem_close(int fd, uint32_t handle);
 void *prismrv_drm_gem_map(int fd, uint32_t handle, uint64_t size);
 int prismrv_drm_submit(int fd, uint32_t cmd_type,
                        uint32_t cmd_handle, uint32_t cmd_size,

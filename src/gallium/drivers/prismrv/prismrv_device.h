@@ -110,6 +110,7 @@ struct prismrv_screen {
 
 struct prismrv_resource {
    struct pipe_resource base;
+   int fd;                     /* drm fd owning gem_handle */
    uint32_t gem_handle;
    void *cpu_map;
    uint64_t mmap_offset;
