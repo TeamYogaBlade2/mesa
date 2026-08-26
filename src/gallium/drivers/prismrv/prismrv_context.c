@@ -229,6 +229,10 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          verts, nverts, ncomp, mode);
    }
    free(verts);
+   /* clear anything past the new stream so a stale packet from an
+    * earlier, longer draw can never be parsed */
+   memset(ctx->batch.ta_map + ta_len, 0,
+          ctx->batch.ta_capacity - ta_len);
 
       /* layer-1 stream in the cmd BO: SET_RT + SET_PROG_* + DRAW */
       {
@@ -237,6 +241,28 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
          uint32_t off = 0;
          unsigned prog_words;
+
+         /* worst-case space check before writing: SET_RT + both shader
+          * programs + uniforms + 8 textures + DRAW + BARRIER */
+         {
+            size_t need = 3 * 4
+               + (ctx->vs.usse_len ? 2 * 4 + ((ctx->vs.usse_len + 4) & ~3u) : 0)
+               + (ctx->fs.usse_len ? 2 * 4 + ((ctx->fs.usse_len + 4) & ~3u) : 0)
+               + ((ctx->num_vs_constants || ctx->num_fs_constants) ?
+                 2 * 4 + (ctx->num_vs_constants + ctx->num_fs_constants) * 16 : 0)
+               + 8 * 6 * 4
+               + 5 * 4 + 2 * 4;
+            if (ctx->batch.cmd_size + need > ctx->batch.cmd_capacity) {
+               /* flush what we have and start a fresh command buffer */
+               struct pipe_fence_handle *fence = NULL;
+               prismrv_context_flush(pctx, &fence, 0);
+               if (fence)
+                  pctx->screen->fence_finish(pctx->screen, pctx, fence,
+                                             UINT64_MAX);
+               ctx->batch.cmd_size = 0;
+               out = (uint32_t *)ctx->batch.cmd_map;
+            }
+         }
 
          /* SET_RT */
          out[off++] = 1; out[off++] = 2;
@@ -262,12 +288,21 @@ prismrv_draw_vbo(struct pipe_context *pctx,
             off += prog_words;
          }
 
-         /* uniforms currently bound through set_constant_buffer */
-         if (ctx->num_constants) {
-            unsigned nwords = ctx->num_constants * 4;
-            out[off++] = 4; out[off++] = nwords;
-            memcpy(out + off, ctx->constants, nwords * 4);
-            off += nwords;
+         /* uniforms: VS block first, then FS block (executor maps
+          * them to r16.. per stage) */
+         {
+            unsigned nv = ctx->num_vs_constants;
+            unsigned nf = ctx->num_fs_constants;
+            if (nv || nf) {
+               out[off++] = 4;
+               out[off++] = nv * 4 + nf * 4;
+               if (nv)
+                  memcpy(out + off, ctx->vs_constants, nv * 16);
+               off += nv * 4;
+               if (nf)
+                  memcpy(out + off, ctx->fs_constants, nf * 16);
+               off += nf * 4;
+            }
          }
 
          /* bound textures: {slot(u32), w, h, gem_handle} per view.
@@ -423,22 +458,25 @@ prismrv_set_constant_buffer(struct pipe_context *pctx,
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
-   /* only the (single) uniform block of the vertex/fragment stages is
-    * modelled; uniforms ship as raw f32 vec4s in SET_UNIFORMS */
+   /* one uniform slot per shader stage; both ship in SET_UNIFORMS
+    * (VS block first, then FS block) with a word count covering both */
    if (index != 0 || !cb || !cb->buffer)
       return;
 
    {
+      float *slot = (shader == MESA_SHADER_VERTEX) ?
+                    ctx->vs_constants : ctx->fs_constants;
+      unsigned *count = (shader == MESA_SHADER_VERTEX) ?
+                        &ctx->num_vs_constants : &ctx->num_fs_constants;
       const float *data = prismrv_resource_map(cb->buffer);
       unsigned nvec4 = cb->buffer_size / 16;
 
       if (!data)
          return;
-      if (nvec4 > ARRAY_SIZE(ctx->constants) / 4)
-         nvec4 = ARRAY_SIZE(ctx->constants) / 4;
-      memcpy(ctx->constants,
-             data + cb->buffer_offset / 4, nvec4 * 16);
-      ctx->num_constants = nvec4;
+      if (nvec4 > ARRAY_SIZE(ctx->vs_constants) / 4)
+         nvec4 = ARRAY_SIZE(ctx->vs_constants) / 4;
+      memcpy(slot, data + cb->buffer_offset / 4, nvec4 * 16);
+      *count = nvec4;
    }
 }
 

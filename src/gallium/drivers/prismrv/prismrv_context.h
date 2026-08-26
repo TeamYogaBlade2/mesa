@@ -91,9 +91,12 @@ struct prismrv_context {
    struct pipe_vertex_buffer vertex_buffers[8];
    unsigned num_vertex_buffers;
 
-   /* constant buffer data */
-   float constants[4 * 64];    /* up to 64 vec4 uniforms */
-   unsigned num_constants;
+   /* constant buffer data (one slot per stage; shipped as
+    * VS-block-then-FS-block inside SET_UNIFORMS) */
+   float vs_constants[4 * 64];   /* up to 64 vec4 uniforms per stage */
+   float fs_constants[4 * 64];
+   unsigned num_vs_constants;
+   unsigned num_fs_constants;
 };
 
 static inline const struct pipe_framebuffer_state *

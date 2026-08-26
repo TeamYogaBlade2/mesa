@@ -121,8 +121,9 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
                alu->src[0].src.ssa);
       emit_def(sb, sizeof(sb), ssa_base(&c->rm, alu->src[1].src.ssa),
                alu->src[1].src.ssa);
-      /* a - b == a*(-1) + b */
-      emit_line(c, "vmad %s, %s, r62, %s", dst, sa, sb);
+      /* a - b == b*(-1) + a (note the operand swap: vmad is
+       * dst = srcA*srcB + srcC) */
+      emit_line(c, "vmad %s, %s, r62, %s", dst, sb, sa);
       break;
 
    default:
@@ -207,6 +208,16 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
    ctx.stage = nir->info.stage;
 
    emit_line(&ctx, "# %s shader", mesa_shader_stage_name(nir->info.stage));
+
+   /*
+    * Constant preamble.  fadd/fsub are lowered to vmad with a 1.0/-1.0
+    * multiplier, matching the shaderc (Python UMD) convention where
+    * r60 = 0.0f, r61 = +1.0f and r62 = -1.0f.  The executor does not
+    * preseed these registers, so the program sets them up itself.
+    */
+   emit_line(&ctx, "mov r60, #0x00000000");
+   emit_line(&ctx, "mov r61, #0x3f800000");
+   emit_line(&ctx, "mov r62, #0xbf800000");
 
    /* walk every block of every function */
    nir_foreach_function_impl(impl, nir) {
