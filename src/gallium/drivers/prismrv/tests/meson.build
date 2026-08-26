@@ -29,4 +29,27 @@ if with_egl
     ],
     suite: ['prismrv'],
   )
+
+  libprismrv_lifecycle = executable(
+    'prismrv_lifecycle',
+    'prismrv_lifecycle.c',
+    include_directories: [inc_include, inc_src],
+    dependencies: [
+      dep_thread, idep_mesautil,
+      dependency('egl'),
+      dependency('glesv2'),
+    ],
+    build_by_default: false,
+  )
+
+  test('prismrv-lifecycle', libprismrv_lifecycle,
+    env: [
+      'LD_PRELOAD=' + libprismrv_noop_drm_shim.full_path(),
+      'EGL_PLATFORM=surfaceless',
+      'MESA_LOADER_DRIVER_OVERRIDE=prismrv',
+      'MESA_DEBUG=1',
+    ],
+    timeout: 120,
+    suite: ['prismrv'],
+  )
 endif
