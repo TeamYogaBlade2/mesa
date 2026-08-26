@@ -38,11 +38,18 @@ prismrv_context_flush(struct pipe_context *pctx,
       /* user bos[0] = TA packet-stream BO (kernel publishes its GPU VA
        * in CCB data[2]; see REVIEW R1/R2 resolution) */
       uint32_t bos[1] = { ctx->batch.ta_handle };
-      prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
+      int ret = prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
                            ctx->batch.cmd_handle, ctx->batch.cmd_size,
                            ctx->batch.ta_handle ? bos : NULL,
                            ctx->batch.ta_handle ? 1 : 0, &out_fd);
       ctx->batch.cmd_size = 0;
+      if (ret) {
+         /* submit failed: no fence will ever signal.  Report through
+          * the debug channel and make sure the caller doesn't get a
+          * valid-looking fd from a failed ioctl. */
+         debug_printf("prismrv: submit failed (%d)\n", ret);
+         out_fd = -1;
+      }
    }
 
    if (fence) {
@@ -99,6 +106,10 @@ prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
    uint32_t off = 0;
    uint32_t nw = nverts * ncomp;
 
+   /* bounds: VGT(3) + INDEX_RANGE(4) + VERTEX_ARRAY hdr(5) + data + END(2) */
+   if (3 + 4 + 5 + nw + 2 > max_words)
+      return 0;
+
    /* VGT_STATE: mode 0=points 1=lines 2=triangles (ta_stage.py) */
    buf[off++] = 1; buf[off++] = 1; buf[off++] = mode;
    /* INDEX_RANGE */
@@ -127,6 +138,9 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    uint32_t ta_len;
    float *verts = NULL;
 
+   bool is_tri = info->mode == MESA_PRIM_TRIANGLES;
+   unsigned min_verts = is_tri ? 3 : (info->mode == MESA_PRIM_LINES ? 2 : 1);
+
    if ((info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_LINES &&
         info->mode != MESA_PRIM_POINTS) || !ctx->num_vertex_elements)
       return;
@@ -146,7 +160,7 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    }
 
    nverts = draws->count;
-   if (nverts < 3)
+   if (nverts < min_verts)
       return;
    if (nverts > 256)
       nverts = 256;
@@ -227,6 +241,11 @@ prismrv_draw_vbo(struct pipe_context *pctx,
       ta_len = prismrv_pack_ta_packets(
          (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
          verts, nverts, ncomp, mode);
+      if (!ta_len) {
+         free(verts);
+         debug_printf("prismrv: TA packet stream does not fit\n");
+         return;
+      }
    }
    free(verts);
    /* clear anything past the new stream so a stale packet from an

@@ -107,6 +107,10 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
       return NULL;
 
    screen->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
+   if (screen->fd < 0) {
+      ralloc_free(screen);
+      return NULL;
+   }
 
    /* runtime core identification: raw EUR_CR_CORE_REVISION from the
     * kernel; the chip table selects feature flags per core type. */
