@@ -10,8 +10,12 @@ libprismrv_smoke = executable(
   'prismrv_smoke',
   'prismrv_smoke.c',
   include_directories: [inc_include, inc_src],
-  dependencies: [dep_thread, idep_mesautil,
-                 dependency('egl', required: false)],
+  dependencies: [
+    dep_thread, idep_mesautil,
+    dependency('egl'),
+    dependency('glesv2'),
+  ],
+  link_args: ['-L' + join_paths(meson.current_build_dir(), '../../../egl')],
   build_by_default: false,
 )
 
