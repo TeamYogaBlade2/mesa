@@ -663,6 +663,12 @@ prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
    if (s && s->nir && !s->usse_text) {
       s->usse_text =
          prismrv_nir_to_usse(s, (nir_shader *)s->nir);
+      if (!s->usse_text) {
+         /* compilation failed: bind nothing so draw_vbo skips
+          * rather than shipping a stale or partial program */
+         memset(&ctx->vs, 0, sizeof(ctx->vs));
+         return;
+      }
       s->usse_len = strlen(s->usse_text);
    }
 
@@ -694,6 +700,10 @@ prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
    if (s && s->nir && !s->usse_text) {
       s->usse_text =
          prismrv_nir_to_usse(s, (nir_shader *)s->nir);
+      if (!s->usse_text) {
+         memset(&ctx->fs, 0, sizeof(ctx->fs));
+         return;
+      }
       s->usse_len = strlen(s->usse_text);
    }
 

@@ -144,6 +144,22 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    caps->max_texture_3d_levels = 0;    /* no 3D textures on SGX5xx */
    caps->max_texture_cube_levels = 0;
 
+   /*
+    * Correct the u_init_pipe_screen_caps() defaults that over-claim:
+    * the backend only handles triangles/lines/points, a small NIR
+    * subset (no loops/branches), and keeps at most 8 vertex buffers.
+    * Advertising more makes st/mesa hand us state we cannot honour.
+    */
+   caps->supported_prim_modes =
+      (1u << MESA_PRIM_TRIANGLES) | (1u << MESA_PRIM_LINES) |
+      (1u << MESA_PRIM_POINTS);
+   caps->supported_prim_modes_with_restart = 0;
+   caps->glsl_feature_level = 100;
+   caps->glsl_feature_level_compatibility = 100;
+   caps->max_vertex_buffers = ARRAY_SIZE(((struct prismrv_context *)0)->
+                                         vertex_buffers);
+   caps->max_varyings = 4;
+
    prismrv_resource_screen_init(screen);
    prismrv_fence_screen_init(screen);
 

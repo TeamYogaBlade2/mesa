@@ -24,7 +24,9 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
 {
    if (res->gem_handle)
       return;
-   res->size = align64(res->base.width0 * res->base.height0 * 4, 4096);
+   res->size = (res->base.target == PIPE_BUFFER)
+      ? align64(res->base.width0, 4096)
+      : align64((uint64_t)res->base.width0 * res->base.height0 * 4, 4096);
    res->fd = screen->fd;
    res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size);
 }
@@ -55,9 +57,26 @@ prismrv_resource_create(struct pipe_screen *pscreen,
    if (!res)
       return NULL;
 
-   if (tmpl->target != PIPE_TEXTURE_2D && tmpl->target != PIPE_TEXTURE_RECT) {
+   /*
+    * Buffers are legal resources (VBO/UBO/constant data all come in as
+    * PIPE_BUFFER via pipe_buffer_create).  Rejecting them made every
+    * glBufferData fail and left draws without a VBO.
+    */
+   if (tmpl->target != PIPE_BUFFER &&
+       tmpl->target != PIPE_TEXTURE_2D &&
+       tmpl->target != PIPE_TEXTURE_RECT) {
       FREE(res);
       return NULL;
+   }
+   {
+      /* buffer size comes from width0; textures use w*h*bpp */
+      uint64_t bytes = (tmpl->target == PIPE_BUFFER)
+         ? align64(tmpl->width0, 4096)
+         : align64((uint64_t)tmpl->width0 * tmpl->height0 * 4, 4096);
+      if (bytes > (uint64_t)UINT32_MAX) {
+         FREE(res);
+         return NULL;
+      }
    }
    if (tmpl->depth0 > 1 || tmpl->array_size > 1) {
       FREE(res);

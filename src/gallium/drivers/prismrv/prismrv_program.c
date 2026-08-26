@@ -65,6 +65,7 @@ struct emit_ctx {
    char *out;                /* ralloc'd string being built */
    struct regmap rm;
    enum mesa_shader_stage stage;
+   bool unsupported;         /* an op we cannot translate was seen */
 };
 
 static void
@@ -127,9 +128,14 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
       break;
 
    default:
-      fprintf(stderr,
-              "prismrv: unsupported NIR op '%s' (%d); instruction skipped\n",
-              info->name, alu->op);
+      /*
+       * The header promises to abort loudly rather than miscompile.
+       * Silently skipping produced programs whose results are wrong
+       * with no diagnostic, so fail the compilation instead.
+       */
+      fprintf(stderr, "prismrv: unsupported NIR op '%s' (%d); "
+                      "failing shader compilation\n", info->name, alu->op);
+      c->unsupported = true;
       break;
    }
 }
@@ -241,5 +247,10 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
 
    }
 
-   return ctx.out ? ctx.out : ralloc_strdup(memctx, "");
+   if (ctx.unsupported) {
+      ralloc_free(ctx.out);
+      return NULL;
+   }
+
+   return ctx.out;
 }
