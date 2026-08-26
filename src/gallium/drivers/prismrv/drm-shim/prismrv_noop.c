@@ -91,9 +91,21 @@ prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_submit *submit = arg;
 
-   /* complete immediately: hand out an eventfd as a signalled fence so
-    * that fence consumers see a ready sync point */
-   submit->out_fence_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+   /*
+    * Complete immediately.  Hand out an eventfd and write to it so it
+    * is READABLE right away — prismrv_fence_finish() poll()s for
+    * POLLIN, and an eventfd that was never written would block
+    * forever (glFinish hung on exactly this).
+    */
+   uint64_t one = 1;
+   int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+   if (efd < 0)
+      return -1;
+   if (write(efd, &one, sizeof(one)) != sizeof(one)) {
+      close(efd);
+      return -1;
+   }
+   submit->out_fence_fd = efd;
    return 0;
 }
 

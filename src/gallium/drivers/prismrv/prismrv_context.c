@@ -264,7 +264,7 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          /* worst-case space check before writing: SET_RT + both shader
           * programs + uniforms + 8 textures + DRAW + BARRIER */
          {
-            size_t need = 3 * 4
+            size_t need = 4 * 4   /* SET_RT is opcode+words+w+h */
                + (ctx->vs.usse_len ? 2 * 4 + ((ctx->vs.usse_len + 4) & ~3u) : 0)
                + (ctx->fs.usse_len ? 2 * 4 + ((ctx->fs.usse_len + 4) & ~3u) : 0)
                + ((ctx->num_vs_constants || ctx->num_fs_constants) ?
@@ -345,6 +345,13 @@ prismrv_draw_vbo(struct pipe_context *pctx,
           * that own their VA space may patch the field instead. */
          out[off++] = 5; out[off++] = sizeof(uint64_t)/4 + 2;
          memset(out + off, 0, 8); off += 2;
+         /* payload layout: ta_va(u64), ta_len(u32), first(u32).
+          * ta_va=0 (kernel publishes the real VA in CCB data[2]);
+          * ta_len MUST be the byte length of the TA stream — the
+          * executor slices the TA BO with it.  The old code wrote
+          * draws->start into this slot (and left 'first'
+          * uninitialised), so every draw parsed as an empty stream. */
+         out[off++] = ta_len;
          out[off++] = draws->start;
          /* BARRIER */
          out[off++] = 6; out[off++] = 0;

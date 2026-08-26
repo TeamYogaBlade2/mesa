@@ -27,36 +27,10 @@
 #define PRISMRV_CORE_SGX544   0x0144
 #define PRISMRV_CORE_SGX545   0x0145
 
-/* kernel uapi: include/uapi/drm/prismrv_drm.h */
-struct drm_prismrv_gem_create {
-   uint64_t size;
-   uint32_t flags;
-   uint32_t handle;
-};
+/* kernel uapi definitions come from the shared header */
+#include "drm-uapi/prismrv_drm.h"
 
-struct drm_prismrv_gem_mmap_offset {
-   uint32_t handle;
-   uint32_t flags;
-   uint64_t offset;
-};
-
-struct drm_prismrv_submit {
-   uint32_t cmd_handle;
-   uint32_t cmd_size;
-   uint32_t num_in_fences;
-   uint64_t in_fences;
-   uint32_t num_bos;
-   uint64_t bos;
-   uint32_t out_fence_fd;
-   uint32_t cmd_type;
-};
-
-struct drm_prismrv_get_param {
-   uint32_t param;
-   uint32_t pad;
-   uint64_t value;
-};
-
+/* layer-1 service types (CCB data[0] selects the uKernel entry) */
 enum prismrv_cmd_type {
    PRISMRV_CMD_TA = 0,
    PRISMRV_CMD_TRANSFER,
@@ -70,11 +44,6 @@ enum prismrv_cmd_type {
    PRISMRV_CMD_SETHWPERFSTATUS,
    PRISMRV_CMD_COUNT,
 };
-
-#define PRISMRV_PARAM_GPU_ID         1
-#define PRISMRV_PARAM_CORE_COUNT     2
-#define PRISMRV_PARAM_UKERNEL_SIZE   3
-#define PRISMRV_PARAM_ERRATA         4
 
 /*
  * Per-core feature description.  Selected by the compatible string the
