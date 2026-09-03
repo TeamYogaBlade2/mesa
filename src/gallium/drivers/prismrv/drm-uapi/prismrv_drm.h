@@ -9,6 +9,19 @@
 #include <linux/ioctl.h>
 #include <linux/types.h>
 
+/*
+ * DRM ioctl base definitions.  In a full Mesa build these would come from
+ * <drm/drm.h>; the local drm-uapi copy defines them here so that this
+ * header is self-contained when included without the rest of the DRM tree
+ * (e.g. during syntax-only passes or in the kernel driver).
+ */
+#ifndef DRM_IOCTL_BASE
+#define DRM_IOCTL_BASE			'd'
+#endif
+#ifndef DRM_COMMAND_BASE
+#define DRM_COMMAND_BASE		0x40
+#endif
+
 #define PRISMRV_UAPI_VERSION		1
 
 /* GPU virtual addresses are 32-bit (BIF MMU, 4 GiB space). */
