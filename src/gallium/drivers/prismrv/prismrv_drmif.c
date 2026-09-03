@@ -4,7 +4,11 @@
  *
  * prismrv_drmif.c — thin wrappers over the prismrv kernel uAPI.
  *
- * Mirrors include/uapi/drm/prismrv_drm.h from the kernel driver.
+ * All ioctl numbers come directly from drm-uapi/prismrv_drm.h so that
+ * this file stays in sync with the kernel header automatically.  The
+ * previous version duplicated the numbers in local PRISMRV_IOCTL_*
+ * macros using a hand-rolled ioc_rdwr() helper, mixing uAPI and local
+ * macros within the same file.
  */
 #include "prismrv_drmif.h"
 
@@ -15,20 +19,6 @@
 #include <sys/mman.h>
 
 #include "drm-uapi/prismrv_drm.h"  /* local copy from linux tree */
-
-#define DRM_IOCTL_BASE 'd'
-#define DRM_COMMAND_BASE 0x40
-
-static uint32_t
-ioc_rdwr(uint32_t nr, size_t size)
-{
-   return (3u << 30) | ((uint32_t)size << 16) | (DRM_IOCTL_BASE << 8) | nr;
-}
-
-#define PRISMRV_IOCTL_GEM_CREATE       ioc_rdwr(0x40, sizeof(struct drm_prismrv_gem_create))
-#define PRISMRV_IOCTL_GEM_MMAP_OFFSET  ioc_rdwr(0x41, sizeof(struct drm_prismrv_gem_mmap_offset))
-#define PRISMRV_IOCTL_SUBMIT           ioc_rdwr(0x42, sizeof(struct drm_prismrv_submit))
-#define PRISMRV_IOCTL_GET_PARAM        ioc_rdwr(0x43, sizeof(struct drm_prismrv_get_param))
 
 uint64_t
 prismrv_drm_get_param(int fd, uint32_t param)
@@ -43,33 +33,32 @@ uint32_t
 prismrv_drm_gem_create(int fd, uint64_t size)
 {
    struct drm_prismrv_gem_create c = { .size = size };
-   if (ioctl(fd, PRISMRV_IOCTL_GEM_CREATE, &c))
+   if (ioctl(fd, DRM_IOCTL_PRISMRV_GEM_CREATE, &c))
       return 0;
    return c.handle;
 }
 
-/* DRM_IOCTL_GEM_CLOSE: _IOWR('d', 0x09, struct drm_gem_close) */
-#define DRM_GEM_CLOSE_HANDLE 0x09
-#ifndef DRM_IOCTL_BASE
-#define DRM_IOCTL_BASE 'd'
-#endif
-
 void
 prismrv_drm_gem_close(int fd, uint32_t handle)
 {
-   /* struct drm_gem_close { __u32 handle; __u32 pad; }; — 8 bytes */
-   uint32_t arg[2] = { handle, 0 };
-   unsigned long nr = (3u << 30) | (sizeof(arg) << 16) |
-                      ((unsigned long)DRM_IOCTL_BASE << 8) |
-                      DRM_GEM_CLOSE_HANDLE;
-   ioctl(fd, nr, arg);
+   /* DRM_IOCTL_GEM_CLOSE: _IOWR('d', 0x09, struct drm_gem_close)
+    * struct drm_gem_close = { __u32 handle; __u32 pad; } — 8 bytes */
+   struct { uint32_t handle; uint32_t pad; } arg = { handle, 0 };
+   /* Build the ioctl number the same way the kernel does to avoid
+    * a dependency on <drm/drm.h> in the Mesa tree. */
+#define DRM_IOCTL_BASE_CHAR 'd'
+#define DRM_GEM_CLOSE_NR    0x09
+   unsigned long nr = (3ul << 30) | (sizeof(arg) << 16) |
+                      ((unsigned long)DRM_IOCTL_BASE_CHAR << 8) |
+                      DRM_GEM_CLOSE_NR;
+   ioctl(fd, nr, &arg);
 }
 
 void *
 prismrv_drm_gem_map(int fd, uint32_t handle, uint64_t size)
 {
    struct drm_prismrv_gem_mmap_offset mo = { .handle = handle };
-   if (ioctl(fd, PRISMRV_IOCTL_GEM_MMAP_OFFSET, &mo))
+   if (ioctl(fd, DRM_IOCTL_PRISMRV_GEM_MMAP_OFFSET, &mo))
       return MAP_FAILED;
 
    return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -90,11 +79,10 @@ prismrv_drm_submit(int fd, uint32_t cmd_type,
    };
    int ret;
 
-   if (num_bos) {
+   if (num_bos)
       s.bos = (uintptr_t)bos;
-   }
 
-   ret = ioctl(fd, PRISMRV_IOCTL_SUBMIT, &s);
+   ret = ioctl(fd, DRM_IOCTL_PRISMRV_SUBMIT, &s);
    if (ret == 0 && out_fence_fd)
       *out_fence_fd = (int32_t)s.out_fence_fd;
    return ret;

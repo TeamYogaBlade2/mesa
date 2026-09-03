@@ -275,9 +275,13 @@ prismrv_draw_vbo(struct pipe_context *pctx,
                /* flush what we have and start a fresh command buffer */
                struct pipe_fence_handle *fence = NULL;
                prismrv_context_flush(pctx, &fence, 0);
-               if (fence)
+               if (fence) {
                   pctx->screen->fence_finish(pctx->screen, pctx, fence,
                                              UINT64_MAX);
+                  /* release the reference returned by flush; without
+                   * this the fence fd is never closed (fd leak) */
+                  pctx->screen->fence_reference(pctx->screen, &fence, NULL);
+               }
                ctx->batch.cmd_size = 0;
                out = (uint32_t *)ctx->batch.cmd_map;
             }
@@ -661,8 +665,13 @@ prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
     * (the old order left ctx->vs.usse_text NULL until the next bind,
     * making the first draw run with the previous shader) */
    if (s && s->nir && !s->usse_text) {
+      /*
+       * Pass NULL so the USSE string is heap-rooted via ralloc.
+       * 's' is CALLOC'd (not ralloc'd) and must not be used as a
+       * ralloc parent.
+       */
       s->usse_text =
-         prismrv_nir_to_usse(s, (nir_shader *)s->nir);
+         prismrv_nir_to_usse(NULL, (nir_shader *)s->nir);
       if (!s->usse_text) {
          /* compilation failed: bind nothing so draw_vbo skips
           * rather than shipping a stale or partial program */
@@ -678,7 +687,11 @@ prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
 static void
 prismrv_delete_vs_state(struct pipe_context *pctx, void *state)
 {
-   FREE(state);
+   struct prismrv_shader_state *s = state;
+   /* usse_text is ralloc_strdup(NULL, ...) — free via ralloc */
+   if (s && s->usse_text)
+      ralloc_free(s->usse_text);
+   FREE(s);
 }
 
 static void *
@@ -699,7 +712,7 @@ prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
 
    if (s && s->nir && !s->usse_text) {
       s->usse_text =
-         prismrv_nir_to_usse(s, (nir_shader *)s->nir);
+         prismrv_nir_to_usse(NULL, (nir_shader *)s->nir);
       if (!s->usse_text) {
          memset(&ctx->fs, 0, sizeof(ctx->fs));
          return;
@@ -713,7 +726,10 @@ prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
 static void
 prismrv_delete_fs_state(struct pipe_context *pctx, void *state)
 {
-   FREE(state);
+   struct prismrv_shader_state *s = state;
+   if (s && s->usse_text)
+      ralloc_free(s->usse_text);
+   FREE(s);
 }
 
 static void

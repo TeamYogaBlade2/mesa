@@ -87,6 +87,7 @@ prismrv_resource_create(struct pipe_screen *pscreen,
    res->base.last_level = 0;
    res->base.nr_samples = 0;
    res->base.nr_storage_samples = 0;
+   res->fd = -1;   /* set by prismrv_resource_allocate_gpu() */
 
    /* allocate the GEM BO eagerly so transfers work immediately */
    prismrv_resource_allocate_gpu(screen, res);
@@ -106,10 +107,16 @@ prismrv_resource_destroy(struct pipe_screen *pscreen,
 
    if (res->cpu_map && res->cpu_map != MAP_FAILED)
       munmap(res->cpu_map, res->size);
-   /* close the GEM handle: without this every texture/RT leaks a BO
-    * until the fd is closed */
-   if (res->gem_handle)
-      prismrv_drm_gem_close(pscreen ? 0 : 0, res->gem_handle);
+   /*
+    * Close the GEM handle on the fd that created it.  res->fd is set
+    * at allocation time by prismrv_resource_allocate_gpu().
+    *
+    * The old code wrote  prismrv_drm_gem_close(pscreen ? 0 : 0, ...)
+    * which always passed fd=0 (the conditional result is trivially 0
+    * either way), so every BO leaked until the DRM fd was closed.
+    */
+   if (res->gem_handle && res->fd >= 0)
+      prismrv_drm_gem_close(res->fd, res->gem_handle);
    FREE(res);
 }
 

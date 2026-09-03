@@ -49,7 +49,18 @@ prismrv_fence_reference(struct pipe_screen *pscreen,
                         struct pipe_fence_handle **ptr,
                         struct pipe_fence_handle *fence)
 {
-   if (pipe_reference(&(*ptr)->reference, &fence->reference))
+   /*
+    * pipe_reference_described() accepts NULL for both dst and src, so
+    * pipe_reference() is safe even when *ptr is NULL (first assignment)
+    * or fence is NULL (release).  The old code wrote
+    *   pipe_reference(&(*ptr)->reference, &fence->reference)
+    * which dereferenced *ptr before checking it — crashing whenever
+    * fence_reference was called to initialise a NULL slot.
+    */
+   struct pipe_reference *old_ref = *ptr ? &(*ptr)->reference : NULL;
+   struct pipe_reference *new_ref = fence  ? &fence->reference  : NULL;
+
+   if (pipe_reference(old_ref, new_ref))
       prismrv_fence_destroy(*ptr);
    *ptr = fence;
 }
