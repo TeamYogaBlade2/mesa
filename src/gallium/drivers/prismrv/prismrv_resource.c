@@ -138,7 +138,8 @@ static unsigned
 prismrv_get_offset(const struct pipe_resource *pres,
                    const struct pipe_box *box)
 {
-   return box->y * pres->width0 * 4 + box->x * 4;
+   unsigned bpp = util_format_get_blocksize(pres->format);
+   return box->y * pres->width0 * bpp + box->x * bpp;
 }
 
 static void *
@@ -171,7 +172,10 @@ prismrv_transfer_map(struct pipe_context *pctx,
    pt->level = level;
    pt->usage = usage;
    pt->box = *box;
-   pt->stride = pres->width0 * 4;
+   {
+      unsigned bpp = util_format_get_blocksize(pres->format);
+      pt->stride = pres->width0 * bpp;
+   }
    pt->layer_stride = pt->stride;
 
    *ptransfer = pt;

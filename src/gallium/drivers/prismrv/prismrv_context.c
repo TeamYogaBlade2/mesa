@@ -18,6 +18,8 @@
 #include "util/u_upload_mgr.h"
 #include "util/ralloc.h"
 #include "util/u_debug.h"
+#include "util/format/u_format.h"
+#include "util/u_half.h"
 
 #include "prismrv_batch.h"
 #include "prismrv_fence.h"
@@ -124,6 +126,88 @@ prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
    return off * 4;   /* byte length */
 }
 
+/*
+ * Fetch one component from a raw vertex attribute byte stream and
+ * return it as a float in the range expected by the shader.
+ *
+ * Supported formats are those the driver advertises via
+ * get_shader_param(MAX_INPUTS) and used by real GL state trackers:
+ *   - FLOAT32 (pass-through)
+ *   - UNORM8  (0..255 → 0.0..1.0)
+ *   - SNORM8  (-128..127 → -1.0..1.0)
+ *   - UINT8   (0..255 → 0.0..255.0, cast)
+ *   - UNORM16 / SNORM16
+ *   - FLOAT16
+ *
+ * Unknown formats fall back to 0.0 so a draw call with an unsupported
+ * attribute format produces black rather than random garbage.
+ */
+static float
+prismrv_fetch_component(const uint8_t *src, enum pipe_format fmt,
+                        unsigned comp)
+{
+   switch (util_format_get_component_bits(fmt, UTIL_FORMAT_COLORSPACE_RGB,
+                                          comp)) {
+   default:
+      break;
+   }
+   /* Dispatch by the format's channel type */
+   const struct util_format_description *desc = util_format_description(fmt);
+   if (comp >= desc->nr_channels)
+      return comp == 3 ? 1.0f : 0.0f;
+
+   const struct util_format_channel_description *ch = &desc->channel[comp];
+   unsigned bits = ch->size;
+   const uint8_t *p = src + ch->shift / 8;
+
+   switch (ch->type) {
+   case UTIL_FORMAT_TYPE_FLOAT:
+      if (bits == 32) return *(const float *)p;
+      if (bits == 16) return util_half_to_float(*(const uint16_t *)p);
+      break;
+   case UTIL_FORMAT_TYPE_UNSIGNED:
+      if (ch->normalized) {
+         if (bits == 8)  return (float)(*p) / 255.0f;
+         if (bits == 16) return (float)(*(const uint16_t *)p) / 65535.0f;
+      } else {
+         if (bits == 8)  return (float)(*p);
+         if (bits == 16) return (float)(*(const uint16_t *)p);
+      }
+      break;
+   case UTIL_FORMAT_TYPE_SIGNED:
+      if (ch->normalized) {
+         if (bits == 8)  return MAX2((float)(*(const int8_t *)p) / 127.0f, -1.0f);
+         if (bits == 16) return MAX2((float)(*(const int16_t *)p) / 32767.0f, -1.0f);
+      } else {
+         if (bits == 8)  return (float)(*(const int8_t *)p);
+         if (bits == 16) return (float)(*(const int16_t *)p);
+      }
+      break;
+   }
+   return 0.0f;
+}
+
+/*
+ * Fetch a full vec4 (up to 4 components) from a vertex buffer for
+ * vertex element @el.  Missing components default to (0,0,0,1).
+ */
+static void
+prismrv_fetch_vertex_attrib(float out[4], const uint8_t *base,
+                            const struct prismrv_vertex_element *el,
+                            unsigned vertex_index)
+{
+   out[0] = 0.f; out[1] = 0.f; out[2] = 0.f; out[3] = 1.f;
+   if (!base)
+      return;
+
+   const uint8_t *src = base + el->src_offset +
+                        (size_t)vertex_index * el->src_stride;
+   unsigned ncomp_fmt = util_format_get_nr_components(el->src_format);
+
+   for (unsigned c = 0; c < ncomp_fmt && c < 4; c++)
+      out[c] = prismrv_fetch_component(src, el->src_format, c);
+}
+
 static void
 prismrv_draw_vbo(struct pipe_context *pctx,
                  const struct pipe_draw_info *info,
@@ -179,9 +263,11 @@ prismrv_draw_vbo(struct pipe_context *pctx,
       const uint8_t *base_pos = NULL, *base_col = NULL;
 
       if (vb_pos && vb_pos->buffer.resource)
-         base_pos = prismrv_resource_map(vb_pos->buffer.resource);
+         base_pos = prismrv_resource_map(vb_pos->buffer.resource)
+                    + vb_pos->buffer_offset;
       if (vb_col && vb_col->buffer.resource)
-         base_col = prismrv_resource_map(vb_col->buffer.resource);
+         base_col = prismrv_resource_map(vb_col->buffer.resource)
+                    + vb_col->buffer_offset;
       if (!base_pos)
          return;
       if (col_el && !base_col)
@@ -201,22 +287,18 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          else if (index_size == 1)
             src = ((const uint8_t *)indices)[draws->start + v];
 
-         const float *p = (const void *)(base_pos + vb_pos->buffer_offset +
-                                         pos_el->src_offset +
-                                         (size_t)src * pos_el->src_stride);
-         const float *c = NULL;
-         float cf[4] = { 0.f, 0.f, 0.f, 1.f };
+         float pos[4], col[4] = { 0.f, 0.f, 0.f, 1.f };
+         prismrv_fetch_vertex_attrib(pos, base_pos, pos_el, src);
+         if (col_el && base_col)
+            prismrv_fetch_vertex_attrib(col, base_col, col_el, src);
 
-         if (col_el && base_col) {
-            c = (const void *)(base_col + vb_col->buffer_offset +
-                               col_el->src_offset +
-                               (size_t)src * col_el->src_stride);
-            cf[0] = c[0]; cf[1] = c[1]; cf[2] = c[2]; cf[3] = c[3];
-         }
-         verts[v * ncomp + 0] = p[0];
-         verts[v * ncomp + 1] = p[1];
-         verts[v * ncomp + 2] = p[2];
-         memcpy(&verts[v * ncomp + 3], cf, sizeof(cf));
+         verts[v * ncomp + 0] = pos[0];
+         verts[v * ncomp + 1] = pos[1];
+         verts[v * ncomp + 2] = pos[2];
+         verts[v * ncomp + 3] = col[0];
+         verts[v * ncomp + 4] = col[1];
+         verts[v * ncomp + 5] = col[2];
+         verts[v * ncomp + 6] = col[3];
       }
    }
 
@@ -582,6 +664,19 @@ prismrv_set_sampler_views(struct pipe_context *pctx,
       if (!ctx->textures[start_slot + i]->cpu_map)
          prismrv_resource_map(sv->base.texture);
    }
+
+   /*
+    * Clear trailing slots.  Without this, a sequence like
+    *   bind(slots 0..3)
+    *   bind(slots 0..1, unbind_trailing=2)
+    * leaves stale texture pointers in slots 2 and 3.  The command
+    * emitter iterates all 8 slots, so those stale pointers would be
+    * encoded into the next draw call.
+    */
+   unsigned trail_start = start_slot + num_views;
+   for (unsigned i = 0; i < unbind_num_trailing_slots &&
+                        trail_start + i < 8; i++)
+      ctx->textures[trail_start + i] = NULL;
 }
 
 /* ---- lifecycle ------------------------------------------------------- */

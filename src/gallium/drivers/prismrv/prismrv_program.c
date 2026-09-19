@@ -155,7 +155,9 @@ emit_tex(struct emit_ctx *c, nir_tex_instr *tex)
          coord = &tex->src[i].src;
    }
    if (!coord || tex->op != nir_texop_tex || tex->sampler_dim != GLSL_SAMPLER_DIM_2D) {
-      fprintf(stderr, "prismrv: unsupported tex op %d\n", tex->op);
+      fprintf(stderr, "prismrv: unsupported tex op %d (sampler_dim %d)\n",
+              tex->op, tex->sampler_dim);
+      c->unsupported = true;
       return;
    }
 
@@ -169,36 +171,88 @@ emit_tex(struct emit_ctx *c, nir_tex_instr *tex)
 static void
 emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
 {
-   /* loads are no-ops in the text form: the emulator preloads uniforms
-    * into r16.. and varyings into r32.. per the ABI.
+   /*
+    * ABI conventions for the USSE emulator / PVR uKernel:
     *
-    * Stores to the fragment colour output become explicit o-bank copies,
-    * one scalar line per component (the emulator's parser is scalar). */
+    *   r16..r31  = VS inputs  (one vec4 per attribute, index = location)
+    *   r32..r47  = FS varyings (one vec4 per varying, index = location)
+    *   uniforms  = loaded from HostCtl UBO mirror into r48..
+    *
+    * load_input / load_uniform / load_const are translated to explicit
+    * vmov instructions from these pre-seeded register banks so that the
+    * emulator and real uKernel both see the correct data.
+    *
+    * Previously these were silent no-ops, meaning the shader used
+    * undefined register contents for all inputs — producing wrong output
+    * on every draw without any compilation error.
+    */
    switch (intr->intrinsic) {
+
+   case nir_intrinsic_load_input: {
+      /*
+       * VS per-vertex attribute: register bank starts at r16.
+       * location × 4 gives the first component of the attribute's vec4.
+       */
+      unsigned loc  = nir_intrinsic_base(intr);
+      unsigned comp = nir_intrinsic_component(intr);
+      unsigned dst  = ssa_base(&c->rm, &intr->def);
+      unsigned ncomp = intr->def.num_components;
+      unsigned src_base = (c->stage == MESA_SHADER_FRAGMENT ? 32 : 16)
+                          + loc * 4 + comp;
+      for (unsigned i = 0; i < ncomp; i++)
+         emit_line(c, "vmov r%u, r%u, swizzle(xxxx)", dst + i, src_base + i);
+      break;
+   }
+
+   case nir_intrinsic_load_uniform: {
+      /*
+       * Uniforms: emulator preloads them at r48 + base/4.
+       * base is the byte offset; components are consecutive.
+       */
+      unsigned base  = nir_intrinsic_base(intr);
+      unsigned dst   = ssa_base(&c->rm, &intr->def);
+      unsigned ncomp = intr->def.num_components;
+      unsigned src_r = 48 + base / 4;
+      for (unsigned i = 0; i < ncomp; i++)
+         emit_line(c, "vmov r%u, r%u, swizzle(xxxx)", dst + i, src_r + i);
+      break;
+   }
+
+   case nir_intrinsic_load_deref:
+      /*
+       * Deref-based loads are not expected after the standard lowering
+       * passes (lower_io eliminates them).  Treat as unsupported so the
+       * caller knows to re-run the right lowering pass.
+       */
+      fprintf(stderr, "prismrv: load_deref reached emitter "
+              "(missing lower_io pass?)\n");
+      c->unsupported = true;
+      break;
+
    case nir_intrinsic_store_output: {
       nir_def *val = intr->src[0].ssa;
       unsigned base = ssa_base(&c->rm, val);
       unsigned mask = nir_intrinsic_write_mask(intr);
       unsigned comps = val->num_components;
-      /* driver location: 0 = colour (FS) / clip position (VS) */
       unsigned loc = nir_intrinsic_base(intr);
 
       for (unsigned ch = 0; ch < comps && ch < 4; ch++) {
          if (!(mask & (1u << ch)))
             continue;
          if (c->stage == MESA_SHADER_VERTEX && loc == 0)
-            /* VS: o0..3 = clip position, o4.. = varyings
-             * (ta_stage.py _fetch_vertices convention) */
             emit_line(c, "vmov o%u, r%u, swizzle(xxxx)", ch, base + ch);
          else
             emit_line(c, "vmov o%u, r%u, swizzle(xxxx)",
-                      c->stage == MESA_SHADER_FRAGMENT ? ch
-                                                       : 4 + ch,
+                      c->stage == MESA_SHADER_FRAGMENT ? ch : 4 + ch,
                       base + ch);
       }
       break;
    }
+
    default:
+      fprintf(stderr, "prismrv: unsupported intrinsic '%s' (%d)\n",
+              nir_intrinsic_infos[intr->intrinsic].name, intr->intrinsic);
+      c->unsupported = true;
       break;
    }
 }
@@ -230,6 +284,27 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             switch (instr->type) {
+            case nir_instr_type_load_const: {
+               /*
+                * SSA immediate constant: allocate a register and load
+                * each component with a literal mov.  The hex encoding
+                * matches the USSE emulator's "#0xNNNNNNNN" syntax for
+                * IEEE-754 bit patterns.
+                */
+               nir_load_const_instr *lc = nir_instr_as_load_const(instr);
+               unsigned dst = ssa_base(&ctx.rm, &lc->def);
+               for (unsigned c = 0; c < lc->def.num_components; c++) {
+                  uint32_t bits;
+                  if (lc->def.bit_size == 32)
+                     bits = lc->value[c].u32;
+                  else if (lc->def.bit_size == 16)
+                     bits = lc->value[c].u16;
+                  else
+                     bits = (uint32_t)lc->value[c].u64;
+                  emit_line(&ctx, "mov r%u, #0x%08x", dst + c, bits);
+               }
+               break;
+            }
             case nir_instr_type_alu:
                emit_alu(&ctx, nir_instr_as_alu(instr));
                break;
@@ -238,6 +313,12 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
                break;
             case nir_instr_type_tex:
                emit_tex(&ctx, nir_instr_as_tex(instr));
+               break;
+            case nir_instr_type_undef:
+               /* SSA undef: allocate a register; leave contents undefined.
+                * Emit a zero-mov so the emulator does not read garbage. */
+               emit_line(&ctx, "mov r%u, #0x00000000",
+                         ssa_base(&ctx.rm, &nir_instr_as_undef(instr)->def));
                break;
             default:
                break;

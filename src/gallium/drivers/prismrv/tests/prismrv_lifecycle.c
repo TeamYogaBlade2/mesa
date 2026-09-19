@@ -44,15 +44,23 @@ static const char *fs_template =
 static char *
 build_fs(int chains)
 {
-   size_t cap = 64 + (size_t)chains * 64;
-   char *body = malloc((size_t)chains * 64 + 16);
+   size_t body_cap = (size_t)chains * 64 + 16;
+   size_t src_cap  = body_cap + strlen(fs_template) + 64;
+   char *body = malloc(body_cap);
    char *src;
    int i;
 
+   if (!body)
+      return NULL;
+   body[0] = '\0';   /* must initialise: strlen(body) is used below */
+
    for (i = 0; i < chains; i++)
-      snprintf(body + strlen(body), 64, "  r = r * c0 + c1;\n");
-   src = malloc(cap + strlen(fs_template));
-   sprintf(src, fs_template, body);
+      snprintf(body + strlen(body), body_cap - strlen(body),
+               "  r = r * c0 + c1;\n");
+
+   src = malloc(src_cap);
+   if (!src) { free(body); return NULL; }
+   snprintf(src, src_cap, fs_template, body);
    free(body);
    return src;
 }
@@ -60,33 +68,37 @@ build_fs(int chains)
 static GLuint
 make_program(int chains)
 {
-   static const char *vs =
+   /* Renamed to vs_src to avoid shadowing the GLuint vs declared below */
+   static const char *vs_src =
       "attribute vec4 p; void main() { gl_Position = p; }\n";
    char *fs_src = build_fs(chains);
-   GLuint vs, fs, prog;
+   GLuint vs_obj, fs_obj, prog;
    GLint ok;
    char log[512];
 
-   vs = glCreateShader(GL_VERTEX_SHADER);
-   glShaderSource(vs, 1, &vs, NULL);
-   glCompileShader(vs);
-   glGetShaderiv(vs, GL_COMPILE_STATUS, &ok);
+   if (!fs_src) { fprintf(stderr, "LIFE: build_fs OOM\n"); exit(1); }
+
+   vs_obj = glCreateShader(GL_VERTEX_SHADER);
+   /* Pass &vs_src (pointer-to-string), not &vs_obj (pointer-to-GLuint) */
+   glShaderSource(vs_obj, 1, &vs_src, NULL);
+   glCompileShader(vs_obj);
+   glGetShaderiv(vs_obj, GL_COMPILE_STATUS, &ok);
    if (!ok) { fprintf(stderr, "LIFE: vs compile failed\n"); exit(1); }
 
-   fs = glCreateShader(GL_FRAGMENT_SHADER);
-   glShaderSource(fs, 1, &fs_src, NULL);
-   glCompileShader(fs);
-   glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+   fs_obj = glCreateShader(GL_FRAGMENT_SHADER);
+   glShaderSource(fs_obj, 1, (const char **)&fs_src, NULL);
+   glCompileShader(fs_obj);
+   glGetShaderiv(fs_obj, GL_COMPILE_STATUS, &ok);
    if (!ok) {
-      glGetShaderInfoLog(fs, sizeof(log), NULL, log);
+      glGetShaderInfoLog(fs_obj, sizeof(log), NULL, log);
       fprintf(stderr, "LIFE: fs(%d) failed: %s\n", chains, log);
       exit(1);
    }
    free(fs_src);
 
    prog = glCreateProgram();
-   glAttachShader(prog, vs);
-   glAttachShader(prog, fs);
+   glAttachShader(prog, vs_obj);
+   glAttachShader(prog, fs_obj);
    glLinkProgram(prog);
    glGetProgramiv(prog, GL_LINK_STATUS, &ok);
    if (!ok) {
@@ -94,8 +106,8 @@ make_program(int chains)
       fprintf(stderr, "LIFE: link(%d) failed: %s\n", chains, log);
       exit(1);
    }
-   glDeleteShader(vs);
-   glDeleteShader(fs);
+   glDeleteShader(vs_obj);
+   glDeleteShader(fs_obj);
    return prog;
 }
 
