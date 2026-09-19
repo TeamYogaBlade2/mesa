@@ -14,6 +14,7 @@
 #include "util/u_memory.h"
 #include "util/u_transfer.h"
 #include "util/u_transfer_helper.h"
+#include "util/format/u_format.h"
 
 #include "prismrv_drmif.h"
 
@@ -24,9 +25,20 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
 {
    if (res->gem_handle)
       return;
-   res->size = (res->base.target == PIPE_BUFFER)
-      ? align64(res->base.width0, 4096)
-      : align64((uint64_t)res->base.width0 * res->base.height0 * 4, 4096);
+   if (res->base.target == PIPE_BUFFER) {
+      res->size = align64(res->base.width0, 4096);
+   } else {
+      /*
+       * Use the actual bytes-per-block from the format description.
+       * The previous code hardcoded * 4 which was correct for 32-bit
+       * formats (B8G8R8A8, R8G8B8A8, A8R8G8B8) but wrong for any
+       * format with a different block size, e.g. R8G8B8 (3 bytes/px)
+       * would under-allocate by 25 %, causing out-of-bounds writes.
+       */
+      unsigned bpp = util_format_get_blocksize(res->base.format);
+      res->size = align64(
+         (uint64_t)res->base.width0 * res->base.height0 * bpp, 4096);
+   }
    res->fd = screen->fd;
    res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size);
 }
@@ -70,9 +82,11 @@ prismrv_resource_create(struct pipe_screen *pscreen,
    }
    {
       /* buffer size comes from width0; textures use w*h*bpp */
+      unsigned bpp = (tmpl->target == PIPE_BUFFER)
+         ? 1 : util_format_get_blocksize(tmpl->format);
       uint64_t bytes = (tmpl->target == PIPE_BUFFER)
          ? align64(tmpl->width0, 4096)
-         : align64((uint64_t)tmpl->width0 * tmpl->height0 * 4, 4096);
+         : align64((uint64_t)tmpl->width0 * tmpl->height0 * bpp, 4096);
       if (bytes > (uint64_t)UINT32_MAX) {
          FREE(res);
          return NULL;
