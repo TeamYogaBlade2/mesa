@@ -100,7 +100,9 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    (void)ro;
    struct prismrv_screen *screen;
    struct pipe_caps *caps;
-   uint64_t gpu_id;
+   uint64_t core_id_raw, core_rev_raw, errata_raw;
+
+   uint64_t core_id_raw, core_rev_raw, errata_raw;
 
    screen = rzalloc(NULL, struct prismrv_screen);
    if (!screen)
@@ -112,19 +114,54 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
       return NULL;
    }
 
-   /* runtime core identification: raw EUR_CR_CORE_REVISION from the
-    * kernel; the chip table selects feature flags per core type. */
-   gpu_id = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_GPU_ID);
-   screen->core_revision = (uint32_t)gpu_id;
-   screen->info = prismrv_core_lookup((gpu_id >> 16) & 0xffff);
+   /*
+    * Query the two separate identification registers (UAPI v2).
+    *
+    * Both queries must succeed.  UINT64_MAX means ioctl failure
+    * (kernel too old, wrong driver, or UAPI version mismatch) and
+    * is treated as a hard error rather than silently continuing
+    * with wrong feature flags.
+    */
+   core_id_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_ID);
+   core_rev_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_REVISION);
+   if (core_id_raw == UINT64_MAX || core_rev_raw == UINT64_MAX) {
+      fprintf(stderr, "prismrv: GET_PARAM(CORE_ID/CORE_REVISION) failed "
+              "— kernel driver too old or UAPI mismatch\n");
+      close(screen->fd);
+      ralloc_free(screen);
+      return NULL;
+   }
 
-   screen->errata_mask =
-      prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_ERRATA);
+   screen->core_id       = (uint32_t)core_id_raw;
+   screen->core_revision = (uint32_t)core_rev_raw;
 
-   debug_printf("prismrv: %s rev %u (errata %#llx)\n",
-                screen->info->name,
-                screen->core_revision & 0xffff,
-                (unsigned long long)screen->errata_mask);
+   /*
+    * The core_id low 16 bits carry the core type (e.g. 0x0144 for
+    * SGX544).  The upper 16 bits are the designer field which is the
+    * same for all SGX variants and is not used for table lookup.
+    */
+   screen->info = prismrv_core_lookup(screen->core_id & 0xffff);
+   if (!screen->info) {
+      fprintf(stderr, "prismrv: unsupported SGX core 0x%04x "
+              "(EUR_CR_CORE_ID=0x%08x) — add a chipinfo entry\n",
+              screen->core_id & 0xffff, screen->core_id);
+      close(screen->fd);
+      ralloc_free(screen);
+      return NULL;
+   }
+
+   errata_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_ERRATA);
+   if (errata_raw == UINT64_MAX) {
+      fprintf(stderr, "prismrv: GET_PARAM(ERRATA) failed\n");
+      close(screen->fd);
+      ralloc_free(screen);
+      return NULL;
+   }
+   screen->errata_mask = errata_raw;
+
+   debug_printf("prismrv: %s core_id=0x%08x rev=0x%08x (errata %#x)\n",
+                screen->info->name, screen->core_id, screen->core_revision,
+                (uint32_t)screen->errata_mask);
 
    screen->base.destroy = prismrv_screen_destroy;
    screen->base.get_name = prismrv_screen_get_name;

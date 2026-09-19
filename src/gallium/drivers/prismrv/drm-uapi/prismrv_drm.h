@@ -62,8 +62,11 @@ struct drm_prismrv_get_param {
 	__u64 value;		/* out */
 };
 
-#define PRISMRV_PARAM_GPU_ID		1 /* core id + revision, e.g. 0x05440073 */
+#define PRISMRV_PARAM_CORE_ID		1 /* raw EUR_CR_CORE_ID register */
+#define PRISMRV_PARAM_CORE_REVISION	5 /* raw EUR_CR_CORE_REVISION register */
 #define PRISMRV_PARAM_CORE_COUNT	2 /* number of SGX MP cores */
+#define PRISMRV_PARAM_UKERNEL_SIZE	3 /* size of the loaded uKernel image */
+#define PRISMRV_PARAM_ERRATA		4 /* bitmask of active BRN workarounds */
 #define PRISMRV_PARAM_UKERNEL_SIZE	3 /* size of the loaded uKernel image */
 #define PRISMRV_PARAM_ERRATA		4 /* bitmask of active BRN workarounds */
 

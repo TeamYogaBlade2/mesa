@@ -71,6 +71,7 @@ struct prismrv_screen {
    int fd;
 
    const struct prismrv_chip_info *info;
+   uint32_t core_id;          /* raw EUR_CR_CORE_ID (from UAPI v2) */
    uint32_t core_revision;    /* raw EUR_CR_CORE_REVISION */
 
    /* cached kernel params */

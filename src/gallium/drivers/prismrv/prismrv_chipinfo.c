@@ -37,6 +37,17 @@ prismrv_core_lookup(uint32_t core_id)
       if (prismrv_core_table[i].core_id == core_id)
          return prismrv_core_table[i].info;
    }
-   /* unknown core: fall back to the newest well-known one */
-   return &prismrv_sgx544_info;
+   /*
+    * Unknown core: return NULL so the caller can fail cleanly.
+    *
+    * The previous fallback to SGX544 was dangerous: an unsupported
+    * core (different register layout, different errata, different
+    * shader capability) would silently continue with wrong feature
+    * flags and possibly wrong errata assumptions, leading to GPU
+    * hangs or memory corruption that look unrelated to the root cause.
+    *
+    * Bring-up engineers should add a table entry for the new core
+    * rather than relying on a fallback.
+    */
+   return NULL;
 }

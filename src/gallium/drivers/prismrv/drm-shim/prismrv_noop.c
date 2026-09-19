@@ -17,11 +17,26 @@
 
 #include "util/u_math.h"
 
-/* Matches what the real kernel detects on MT6589 (SGX544 rev 115). */
-#define SHIM_GPU_ID   0x05440073ull
-#define SHIM_CORES    1
-#define SHIM_UKSIZE   (106956)
-#define SHIM_ERRATA   0x801 /* BRN_31780 | BRN_36513 */
+/*
+ * Matches what the real kernel detects on MT6589 (SGX544 rev 115).
+ *
+ * EUR_CR_CORE_ID layout (offset 0x20):
+ *   [31:16] designer (Imagination = 0x0000 in published defs)
+ *   [15:0]  core_id  (SGX544 = 0x0144)
+ *
+ * EUR_CR_CORE_REVISION layout (offset 0x24):
+ *   [31:24] designer  [23:16] major=0x73  [15:8] minor  [7:0] maintenance
+ *
+ * The previous SHIM_GPU_ID 0x05440073 was interpreted as
+ * (gpu_id >> 16) & 0xffff == 0x0544, which does not match the kernel's
+ * PRISMRV_CORE_SGX544 = 0x0144.  That mismatch meant core_lookup()
+ * always fell through to the (now removed) fallback.
+ */
+#define SHIM_CORE_ID    0x00000144ull   /* EUR_CR_CORE_ID: designer=0, core=SGX544 */
+#define SHIM_CORE_REV   0x00730000ull   /* EUR_CR_CORE_REVISION: major=0x73 */
+#define SHIM_CORES      1
+#define SHIM_UKSIZE     (106956)
+#define SHIM_ERRATA     0x801 /* BRN_31780 | BRN_36513 */
 
 static int
 prismrv_ioctl_noop(int fd, unsigned long request, void *arg)
@@ -35,8 +50,11 @@ prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
    struct drm_prismrv_get_param *gp = arg;
 
    switch (gp->param) {
-   case PRISMRV_PARAM_GPU_ID:
-      gp->value = SHIM_GPU_ID;
+   case PRISMRV_PARAM_CORE_ID:
+      gp->value = SHIM_CORE_ID;
+      return 0;
+   case PRISMRV_PARAM_CORE_REVISION:
+      gp->value = SHIM_CORE_REV;
       return 0;
    case PRISMRV_PARAM_CORE_COUNT:
       gp->value = SHIM_CORES;
