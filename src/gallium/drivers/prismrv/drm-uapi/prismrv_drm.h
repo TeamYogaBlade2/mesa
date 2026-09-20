@@ -22,7 +22,7 @@
 #define DRM_COMMAND_BASE		0x40
 #endif
 
-#define PRISMRV_UAPI_VERSION		1
+#define PRISMRV_UAPI_VERSION		2
 
 /* GPU virtual addresses are 32-bit (BIF MMU, 4 GiB space). */
 typedef __u32 prismrv_dev_addr_t;
@@ -65,8 +65,6 @@ struct drm_prismrv_get_param {
 #define PRISMRV_PARAM_CORE_ID		1 /* raw EUR_CR_CORE_ID register */
 #define PRISMRV_PARAM_CORE_REVISION	5 /* raw EUR_CR_CORE_REVISION register */
 #define PRISMRV_PARAM_CORE_COUNT	2 /* number of SGX MP cores */
-#define PRISMRV_PARAM_UKERNEL_SIZE	3 /* size of the loaded uKernel image */
-#define PRISMRV_PARAM_ERRATA		4 /* bitmask of active BRN workarounds */
 #define PRISMRV_PARAM_UKERNEL_SIZE	3 /* size of the loaded uKernel image */
 #define PRISMRV_PARAM_ERRATA		4 /* bitmask of active BRN workarounds */
 

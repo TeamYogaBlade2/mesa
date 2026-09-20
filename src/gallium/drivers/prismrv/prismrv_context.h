@@ -81,7 +81,9 @@ struct prismrv_context {
    struct prismrv_depth_stencil_alpha_state depth;
 
    /* bound texture views (slot -> resource), consumed by SET_TEXTURE */
-   struct prismrv_resource *textures[8];
+   /* pipe_resource refs held for the lifetime of the sampler binding.
+    * Released on unbind and on context destroy. */
+   struct pipe_resource *textures[8];
 
    /* vertex elements */
    struct prismrv_vertex_element vertex_elements[8];

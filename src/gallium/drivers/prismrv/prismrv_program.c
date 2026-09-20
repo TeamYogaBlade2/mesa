@@ -5,16 +5,21 @@
  * prismrv_program.c — NIR → USSE backend.
  *
  * Walks a NIR shader and emits USSE text compatible with the PrismRV
- * emulator's parser (usse_emu.parse).  Register conventions match the
- * hardware two-stage model used by the kernel driver:
+ * emulator's parser (usse_emu.parse).  Register conventions:
  *
- *   r0..r15   vertex inputs / scratch
- *   r16..r47  uniforms      (vec4 N at registers N..N+3)
- *   r32..r47  varyings      (interpolated by the PBE before invocation)
- *   o0..o3    fragment output
+ *   r0..r15   scratch / temporaries
+ *   r16..r31  VS per-vertex inputs  (r16 + location*4 + component)
+ *   r32..r47  FS varyings           (r32 + location*4 + component)
+ *   r48..     uniforms              (r48 + byte_offset/4)
+ *   r60       constant 0.0          (emitted in preamble)
+ *   r61       constant 1.0          (emitted in preamble)
+ *   r62       constant -1.0         (emitted in preamble)
+ *   o0..o3    VS clip position / FS colour output (per component)
+ *   o4..      VS varying outputs
  *
- * Only the vec4 subset needed for the first GL tests is handled;
- * unsupported NIR ops abort compilation loudly rather than miscompiling.
+ * Only 32-bit NIR is supported; 16-bit and 64-bit constants are
+ * rejected (run nir_lower_bit_size before calling this backend).
+ * Unsupported NIR ops abort compilation loudly rather than miscompiling.
  */
 #include "prismrv_program.h"
 
@@ -285,24 +290,36 @@ prismrv_nir_to_usse(void *memctx, nir_shader *nir)
          nir_foreach_instr(instr, block) {
             switch (instr->type) {
             case nir_instr_type_load_const: {
-               /*
-                * SSA immediate constant: allocate a register and load
-                * each component with a literal mov.  The hex encoding
-                * matches the USSE emulator's "#0xNNNNNNNN" syntax for
-                * IEEE-754 bit patterns.
-                */
                nir_load_const_instr *lc = nir_instr_as_load_const(instr);
                unsigned dst = ssa_base(&ctx.rm, &lc->def);
-               for (unsigned c = 0; c < lc->def.num_components; c++) {
-                  uint32_t bits;
-                  if (lc->def.bit_size == 32)
-                     bits = lc->value[c].u32;
-                  else if (lc->def.bit_size == 16)
-                     bits = lc->value[c].u16;
-                  else
-                     bits = (uint32_t)lc->value[c].u64;
-                  emit_line(&ctx, "mov r%u, #0x%08x", dst + c, bits);
+
+               /*
+                * Only 32-bit constants are supported: the USSE text
+                * format uses 32-bit hex literals and all working
+                * registers are 32-bit.
+                *
+                * 16-bit values cannot simply be zero-extended: a
+                * half-float 1.0 (0x3c00) is not the same bit pattern
+                * as single-float 1.0 (0x3f800000).  64-bit values
+                * similarly cannot be truncated without data loss.
+                *
+                * NIR lowering passes (nir_lower_bit_size) should
+                * convert 16-bit and 64-bit ops to 32-bit before we
+                * reach here.  If they do not, reject compilation
+                * loudly rather than silently miscompile.
+                */
+               if (lc->def.bit_size != 32) {
+                  fprintf(stderr,
+                          "prismrv: %u-bit load_const not supported "
+                          "(run nir_lower_bit_size first)\n",
+                          lc->def.bit_size);
+                  ctx.unsupported = true;
+                  break;
                }
+
+               for (unsigned c = 0; c < lc->def.num_components; c++)
+                  emit_line(&ctx, "mov r%u, #0x%08x",
+                            dst + c, lc->value[c].u32);
                break;
             }
             case nir_instr_type_alu:

@@ -19,7 +19,7 @@
 #include "util/ralloc.h"
 #include "util/u_debug.h"
 #include "util/format/u_format.h"
-#include "util/u_half.h"
+#include "util/half_float.h"
 
 #include "prismrv_batch.h"
 #include "prismrv_fence.h"
@@ -163,7 +163,7 @@ prismrv_fetch_component(const uint8_t *src, enum pipe_format fmt,
    switch (ch->type) {
    case UTIL_FORMAT_TYPE_FLOAT:
       if (bits == 32) return *(const float *)p;
-      if (bits == 16) return util_half_to_float(*(const uint16_t *)p);
+      if (bits == 16) return _mesa_half_to_float(*(const uint16_t *)p);
       break;
    case UTIL_FORMAT_TYPE_UNSIGNED:
       if (ch->normalized) {
@@ -413,7 +413,8 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          /* bound textures: {slot(u32), w, h, gem_handle} per view.
           * The executor maps the handle to pixels for `smp`. */
          for (unsigned t = 0; t < 8; t++) {
-            struct prismrv_resource *tex = ctx->textures[t];
+            struct prismrv_resource *tex =
+               to_prismrv_resource(ctx->textures[t]);
 
             if (!tex || !tex->cpu_map)
                continue;
@@ -653,30 +654,25 @@ prismrv_set_sampler_views(struct pipe_context *pctx,
    for (unsigned i = 0; i < num_views && start_slot + i < 8; i++) {
       struct prismrv_sampler_view *sv =
          views ? (struct prismrv_sampler_view *)views[i] : NULL;
+      unsigned slot = start_slot + i;
 
       if (!sv || !sv->base.texture) {
-         ctx->textures[start_slot + i] = NULL;
+         pipe_resource_reference(&ctx->textures[slot], NULL);
          continue;
       }
-      ctx->textures[start_slot + i] =
-         to_prismrv_resource(sv->base.texture);
+      /* grab a reference so the resource cannot be destroyed while
+       * it is bound to the context's texture array */
+      pipe_resource_reference(&ctx->textures[slot], sv->base.texture);
       /* nearest sampling needs the CPU mapping of the texture BO */
-      if (!ctx->textures[start_slot + i]->cpu_map)
-         prismrv_resource_map(sv->base.texture);
+      if (!to_prismrv_resource(ctx->textures[slot])->cpu_map)
+         prismrv_resource_map(ctx->textures[slot]);
    }
 
-   /*
-    * Clear trailing slots.  Without this, a sequence like
-    *   bind(slots 0..3)
-    *   bind(slots 0..1, unbind_trailing=2)
-    * leaves stale texture pointers in slots 2 and 3.  The command
-    * emitter iterates all 8 slots, so those stale pointers would be
-    * encoded into the next draw call.
-    */
+   /* Release stale trailing slots */
    unsigned trail_start = start_slot + num_views;
    for (unsigned i = 0; i < unbind_num_trailing_slots &&
                         trail_start + i < 8; i++)
-      ctx->textures[trail_start + i] = NULL;
+      pipe_resource_reference(&ctx->textures[trail_start + i], NULL);
 }
 
 /* ---- lifecycle ------------------------------------------------------- */
@@ -714,6 +710,14 @@ static void
 prismrv_context_destroy(struct pipe_context *pctx)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   /* Release sampler texture references */
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->textures); i++)
+      pipe_resource_reference(&ctx->textures[i], NULL);
+
+   /* Release vertex buffer references */
+   for (unsigned i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++)
+      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
 
    /* blitter/uploader can be NULL when context creation failed early */
    if (ctx->blitter)
@@ -828,6 +832,7 @@ prismrv_delete_fs_state(struct pipe_context *pctx, void *state)
 }
 
 static void
+static void
 prismrv_set_vertex_buffers(struct pipe_context *pctx,
                            unsigned count,
                            const struct pipe_vertex_buffer *buffers)
@@ -835,16 +840,27 @@ prismrv_set_vertex_buffers(struct pipe_context *pctx,
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    unsigned i;
 
-   /* count is the number of buffers in the array; buffers == NULL
-    * unbinds everything */
-   memset(ctx->vertex_buffers, 0, sizeof(ctx->vertex_buffers));
+   /* Release all current vertex buffer references first */
+   for (i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
+      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
+      ctx->vertex_buffers[i].is_user_buffer = false;
+      ctx->vertex_buffers[i].buffer_offset  = 0;
+      ctx->vertex_buffers[i].stride         = 0;
+   }
    ctx->num_vertex_buffers = 0;
-   if (!buffers)
+
+   if (!buffers || !count)
       return;
+
    for (i = 0; i < count && i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
       if (!buffers[i].buffer.resource)
          continue;
-      ctx->vertex_buffers[i] = buffers[i];
+      /* Acquire a reference so the resource stays alive while bound */
+      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource,
+                              buffers[i].buffer.resource);
+      ctx->vertex_buffers[i].buffer_offset  = buffers[i].buffer_offset;
+      ctx->vertex_buffers[i].stride         = buffers[i].stride;
+      ctx->vertex_buffers[i].is_user_buffer = buffers[i].is_user_buffer;
       ctx->num_vertex_buffers = i + 1;
    }
 }

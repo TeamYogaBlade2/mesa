@@ -102,8 +102,6 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    struct pipe_caps *caps;
    uint64_t core_id_raw, core_rev_raw, errata_raw;
 
-   uint64_t core_id_raw, core_rev_raw, errata_raw;
-
    screen = rzalloc(NULL, struct prismrv_screen);
    if (!screen)
       return NULL;
