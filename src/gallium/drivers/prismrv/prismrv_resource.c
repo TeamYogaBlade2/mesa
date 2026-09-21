@@ -157,6 +157,30 @@ prismrv_transfer_map(struct pipe_context *pctx,
    if (!res->gem_handle)
       return NULL;
 
+   /*
+    * CPU-write hazard: if the GPU is still reading this resource from
+    * a previous submit, wait before handing a writable CPU pointer to
+    * the caller.
+    *
+    * The kernel registers an exclusive fence on each BO's dma_resv
+    * during submit.  The userspace side of this contract is: before
+    * writing a BO that may be in-flight, wait for all GPU work that
+    * references it to finish.  We use ctx->batch.prev_fence_fd for
+    * the most recent submit's fence (which the flush path maintains).
+    *
+    * This does not cover the multi-context case perfectly — that
+    * requires implicit sync through the kernel's dma_resv path — but
+    * catches the most common single-context write-after-GPU hazard.
+    */
+   if ((usage & PIPE_MAP_WRITE) && ctx->batch.prev_fence_fd >= 0) {
+      struct pollfd pfd = {
+         .fd     = ctx->batch.prev_fence_fd,
+         .events = POLLIN,
+      };
+      poll(&pfd, 1, -1);
+      /* leave prev_fence_fd open: flush() will close and replace it */
+   }
+
    if (!res->cpu_map || res->cpu_map == MAP_FAILED) {
       res->cpu_map = prismrv_drm_gem_map(screen->fd, res->gem_handle,
                                          res->size);

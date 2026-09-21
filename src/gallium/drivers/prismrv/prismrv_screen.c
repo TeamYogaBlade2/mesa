@@ -65,6 +65,25 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
                                    unsigned storage_sample_count,
                                    unsigned usage)
 {
+   /*
+    * Only targets that resource_create() can actually allocate.
+    * Advertising support for cube maps, 2D arrays, 3D textures etc.
+    * here while resource_create() returns NULL for them causes
+    * silent errors in the state tracker.
+    */
+   switch (target) {
+   case PIPE_TEXTURE_2D:
+   case PIPE_TEXTURE_RECT:
+   case PIPE_BUFFER:
+      break;
+   default:
+      return false;
+   }
+
+   /* No MSAA */
+   if (sample_count > 1 || storage_sample_count > 1)
+      return false;
+
    /* initial support: unorm RGBA8 render targets and sampling only */
    if (usage & PIPE_BIND_RENDER_TARGET) {
       switch (format) {
@@ -86,9 +105,6 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
          return false;
       }
    }
-
-   if (sample_count > 1)
-      return false;
 
    return true;
 }

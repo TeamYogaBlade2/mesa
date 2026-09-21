@@ -212,7 +212,14 @@ prismrv_fetch_component(const uint8_t *src, enum pipe_format fmt,
          if (bits == 16) return (float)(*(const int16_t *)p);
       }
       break;
+   default:
+      break;
    }
+   /* packed formats (RGB565, RGB10A2, etc.) use ch->shift that is not
+    * byte-aligned; 'shift/8' above would read from the wrong byte and
+    * extract garbage.  Return 0 rather than silently misread.
+    * These formats should be rejected by the state tracker before
+    * reaching here (is_format_supported returns false for them). */
    return 0.0f;
 }
 
