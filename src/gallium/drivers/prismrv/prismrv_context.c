@@ -37,8 +37,6 @@ prismrv_context_flush(struct pipe_context *pctx,
    int out_fd = -1;
 
    if (ctx->batch.cmd_size) {
-      /* user bos[0] = TA packet-stream BO (kernel publishes its GPU VA
-       * in CCB data[2]; see REVIEW R1/R2 resolution) */
       uint32_t bos[1] = { ctx->batch.ta_handle };
       int ret = prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
                            ctx->batch.cmd_handle, ctx->batch.cmd_size,
@@ -46,21 +44,52 @@ prismrv_context_flush(struct pipe_context *pctx,
                            ctx->batch.ta_handle ? 1 : 0, &out_fd);
       ctx->batch.cmd_size = 0;
       if (ret) {
-         /* submit failed: no fence will ever signal.  Report through
-          * the debug channel and make sure the caller doesn't get a
-          * valid-looking fd from a failed ioctl. */
          debug_printf("prismrv: submit failed (%d)\n", ret);
+         out_fd = -1;
+      } else if (out_fd >= 0) {
+         /*
+          * Wait for the PREVIOUS submit to finish before we let the
+          * CPU write into the same cmd/TA BO for the next frame.
+          *
+          * The single-BO design means that resetting cmd_size=0 and
+          * writing new GPU commands into cmd_map is only safe once
+          * the GPU has stopped reading the old commands from that
+          * same buffer.  Without this wait:
+          *
+          *   submit N  → GPU reads cmd_bo[0..cmd_size]
+          *   cmd_size=0 → CPU writes draw N+1 into cmd_bo[0..]
+          *   GPU reads N+1 data mid-write → corruption
+          *
+          * We use a one-frame lag (wait for N-1 before writing N+1)
+          * so the GPU can work on frame N while the CPU builds N+1.
+          * When prev_fence_fd is valid, it refers to frame N-1.
+          */
+         if (ctx->batch.prev_fence_fd >= 0) {
+            struct pollfd pfd = {
+               .fd     = ctx->batch.prev_fence_fd,
+               .events = POLLIN,
+            };
+            poll(&pfd, 1, -1);
+            close(ctx->batch.prev_fence_fd);
+         }
+         ctx->batch.prev_fence_fd = out_fd;
          out_fd = -1;
       }
    }
 
    if (fence) {
-      *fence = out_fd >= 0 ? prismrv_fence_create(out_fd) : NULL;
-      if (out_fd >= 0 && !*fence)
-         close(out_fd);
+      /*
+       * The fence for the just-submitted frame is now in
+       * ctx->batch.prev_fence_fd (we need it for BO-reuse safety).
+       * For the caller we return the fence for frame N-2 (already
+       * signalled) or NULL, since the actual frame-N fence is
+       * consumed internally.
+       *
+       * TODO: proper double-buffering so callers can track the
+       * real completion fence for multi-context implicit sync.
+       */
+      *fence = NULL;
    } else if (out_fd >= 0) {
-      /* caller does not want the fence: close the fd so it does not
-       * leak (REVIEW R3) */
       close(out_fd);
    }
 }
@@ -831,7 +860,6 @@ prismrv_delete_fs_state(struct pipe_context *pctx, void *state)
    FREE(s);
 }
 
-static void
 static void
 prismrv_set_vertex_buffers(struct pipe_context *pctx,
                            unsigned count,

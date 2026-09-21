@@ -14,6 +14,7 @@ prismrv_batch_init_context(struct prismrv_context *ctx)
    struct prismrv_screen *screen = ctx->screen;
 
    ctx->batch.cmd_capacity = 64 * 1024;
+   ctx->batch.prev_fence_fd = -1;
    ctx->batch.cmd_handle =
       prismrv_drm_gem_create(screen->fd, ctx->batch.cmd_capacity);
    if (!ctx->batch.cmd_handle)

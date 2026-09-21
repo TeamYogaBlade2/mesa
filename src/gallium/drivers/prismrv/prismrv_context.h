@@ -20,6 +20,13 @@ struct prismrv_batch {
    uint32_t ta_handle;
    uint8_t *ta_map;
    uint32_t ta_capacity;
+
+   /*
+    * Fence fd from the previous submit, kept open until the submit
+    * after next so the CPU can wait for GPU completion before
+    * re-writing the cmd/TA BO.  -1 when no previous submit exists.
+    */
+   int prev_fence_fd;
 };
 
 /* bound shader state */
