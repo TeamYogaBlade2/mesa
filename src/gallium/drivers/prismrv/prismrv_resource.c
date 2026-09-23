@@ -9,6 +9,7 @@
 
 #include <sys/mman.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "util/u_math.h"
 #include "util/u_memory.h"
@@ -177,8 +178,11 @@ prismrv_transfer_map(struct pipe_context *pctx,
          .fd     = ctx->batch.prev_fence_fd,
          .events = POLLIN,
       };
-      poll(&pfd, 1, -1);
-      /* leave prev_fence_fd open: flush() will close and replace it */
+      int pr = poll(&pfd, 1, 5000);
+      if (pr < 0 || !(pfd.revents & (POLLIN | POLLERR | POLLHUP)))
+         debug_printf("prismrv: transfer_map fence wait failed "
+                      "(ret=%d revents=%x)\n", pr, pfd.revents);
+      /* leave prev_fence_fd open: batch_begin() will close it */
    }
 
    if (!res->cpu_map || res->cpu_map == MAP_FAILED) {

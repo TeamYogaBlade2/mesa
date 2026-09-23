@@ -58,11 +58,6 @@ jobs:
     - name: Build
       run: ninja -C build
 
-    - name: NIR to USSE Test
-      run: |
-        meson test -C build prismrv-nir --print-errorlogs || \
-        echo "::warning::NIR test needs full NIR dependency resolution"
-
     - name: Run prismrv NIR test
       run: meson test -C build prismrv-nir --print-errorlogs
 
@@ -87,9 +82,12 @@ jobs:
     - uses: actions/checkout@v4
     - name: Syntax check (clang -fsyntax-only)
       run: |
+        sudo apt-get install -y clang
         for f in src/gallium/drivers/prismrv/*.c; do
+          echo "checking $f"
           clang -fsyntax-only -std=c11 \
             -DHAVE_ENDIAN_H -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC \
+            -DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0 \
             -D_GNU_SOURCE -DNDEBUG \
             -Isrc/gallium/include -Isrc/gallium/auxiliary \
             -Isrc/compiler/nir/generated -Isrc/compiler/generated \

@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <poll.h>
 
 #include "util/u_blitter.h"
 #include "util/u_memory.h"
@@ -48,47 +49,24 @@ prismrv_context_flush(struct pipe_context *pctx,
          out_fd = -1;
       } else if (out_fd >= 0) {
          /*
-          * Wait for the PREVIOUS submit to finish before we let the
-          * CPU write into the same cmd/TA BO for the next frame.
-          *
-          * The single-BO design means that resetting cmd_size=0 and
-          * writing new GPU commands into cmd_map is only safe once
-          * the GPU has stopped reading the old commands from that
-          * same buffer.  Without this wait:
-          *
-          *   submit N  → GPU reads cmd_bo[0..cmd_size]
-          *   cmd_size=0 → CPU writes draw N+1 into cmd_bo[0..]
-          *   GPU reads N+1 data mid-write → corruption
-          *
-          * We use a one-frame lag (wait for N-1 before writing N+1)
-          * so the GPU can work on frame N while the CPU builds N+1.
-          * When prev_fence_fd is valid, it refers to frame N-1.
+          * Keep prev_fence_fd for prismrv_batch_begin() to wait on
+          * before the CPU writes into cmd_map for the next frame.
+          * Use dup() so the internal copy and the caller's copy have
+          * independent lifetimes.
           */
-         if (ctx->batch.prev_fence_fd >= 0) {
-            struct pollfd pfd = {
-               .fd     = ctx->batch.prev_fence_fd,
-               .events = POLLIN,
-            };
-            poll(&pfd, 1, -1);
+         if (ctx->batch.prev_fence_fd >= 0)
             close(ctx->batch.prev_fence_fd);
-         }
-         ctx->batch.prev_fence_fd = out_fd;
-         out_fd = -1;
+         ctx->batch.prev_fence_fd = dup(out_fd);
       }
    }
 
    if (fence) {
-      /*
-       * The fence for the just-submitted frame is now in
-       * ctx->batch.prev_fence_fd (we need it for BO-reuse safety).
-       * For the caller we return the fence for frame N-2 (already
-       * signalled) or NULL, since the actual frame-N fence is
-       * consumed internally.
-       *
-       * TODO: proper double-buffering so callers can track the
-       * real completion fence for multi-context implicit sync.
-       */
-      *fence = NULL;
+      /* Return the real fence to the caller for Gallium implicit sync.
+       * The internal prev_fence_fd is a dup'd copy; closing either does
+       * not affect the other. */
+      *fence = (out_fd >= 0) ? prismrv_fence_create(out_fd) : NULL;
+      if (out_fd >= 0 && !*fence)
+         close(out_fd);
    } else if (out_fd >= 0) {
       close(out_fd);
    }
@@ -264,6 +242,33 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    if ((info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_LINES &&
         info->mode != MESA_PRIM_POINTS) || !ctx->num_vertex_elements)
       return;
+
+   /*
+    * prismrv_batch_begin(): wait for the previous GPU job before writing
+    * new commands into cmd_map.
+    *
+    * This must happen BEFORE any write to ctx->batch.cmd_map or
+    * ctx->batch.ta_map.  When cmd_size == 0 we are starting a new
+    * batch (either first draw or after a flush), which means the BO
+    * from the previous submit may still be in flight.
+    *
+    * prev_fence_fd is the fence from the last flush(); poll() blocks
+    * until that job completes, then we can safely overwrite the BO.
+    *
+    * Placing the wait here (not in flush()) is critical: flush() sets
+    * cmd_size=0 but the CPU starts writing N+1 commands immediately
+    * on the next draw — the wait must precede that write, not follow
+    * the previous submit.
+    */
+   if (ctx->batch.cmd_size == 0 && ctx->batch.prev_fence_fd >= 0) {
+      struct pollfd pfd = { .fd = ctx->batch.prev_fence_fd, .events = POLLIN };
+      int pr = poll(&pfd, 1, 5000); /* 5 s timeout: GPU should never hang this long */
+      if (pr < 0 || !(pfd.revents & (POLLIN | POLLERR | POLLHUP)))
+         debug_printf("prismrv: batch_begin fence wait failed (ret=%d revents=%x)\n",
+                      pr, pfd.revents);
+      close(ctx->batch.prev_fence_fd);
+      ctx->batch.prev_fence_fd = -1;
+   }
 
    /* indexed draw: expand the index buffer into a vertex list first */
    const uint32_t *indices = NULL;
@@ -755,6 +760,12 @@ prismrv_context_destroy(struct pipe_context *pctx)
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++)
       pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
 
+   /* Close the batch reuse fence if it was never consumed by batch_begin */
+   if (ctx->batch.prev_fence_fd >= 0) {
+      close(ctx->batch.prev_fence_fd);
+      ctx->batch.prev_fence_fd = -1;
+   }
+
    /* blitter/uploader can be NULL when context creation failed early */
    if (ctx->blitter)
       util_blitter_destroy(ctx->blitter);
@@ -765,17 +776,12 @@ prismrv_context_destroy(struct pipe_context *pctx)
    if (ctx->batch.ta_map && ctx->batch.ta_map != MAP_FAILED)
       munmap(ctx->batch.ta_map, ctx->batch.ta_capacity);
    if (ctx->batch.cmd_handle) {
-      /* GEM handles are per-context resources: close them so the
-       * kernel can reclaim the BOs (drm close does this too, but be
-       * explicit in case the fd is shared) */
       struct prismrv_screen *screen = ctx->screen;
       if (ctx->batch.ta_handle)
          prismrv_drm_gem_close(screen->fd, ctx->batch.ta_handle);
       prismrv_drm_gem_close(screen->fd, ctx->batch.cmd_handle);
    }
 
-   /* the context itself is ralloc'd (see prismrv_context_create);
-    * FREE() here would corrupt the heap */
    ralloc_free(ctx);
 }
 
@@ -880,7 +886,6 @@ prismrv_set_vertex_buffers(struct pipe_context *pctx,
       pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
       ctx->vertex_buffers[i].is_user_buffer = false;
       ctx->vertex_buffers[i].buffer_offset  = 0;
-      ctx->vertex_buffers[i].stride         = 0;
    }
    ctx->num_vertex_buffers = 0;
 
@@ -894,7 +899,6 @@ prismrv_set_vertex_buffers(struct pipe_context *pctx,
       pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource,
                               buffers[i].buffer.resource);
       ctx->vertex_buffers[i].buffer_offset  = buffers[i].buffer_offset;
-      ctx->vertex_buffers[i].stride         = buffers[i].stride;
       ctx->vertex_buffers[i].is_user_buffer = buffers[i].is_user_buffer;
       ctx->num_vertex_buffers = i + 1;
    }
