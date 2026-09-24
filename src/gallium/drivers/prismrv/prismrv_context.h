@@ -1,0 +1,136 @@
+/*
+ * Copyright 2026 PrismRV project
+ * SPDX-License-Identifier: MIT
+ */
+#ifndef PRISMRV_CONTEXT_H_
+#define PRISMRV_CONTEXT_H_
+
+#include "prismrv_device.h"
+
+struct blitter_context;
+struct u_upload_mgr;
+
+struct prismrv_batch {
+   uint32_t cmd_handle;
+   uint8_t *cmd_map;
+   uint32_t cmd_size;
+   uint32_t cmd_capacity;
+
+   /* layer-2 TA packet stream BO */
+   uint32_t ta_handle;
+   uint8_t *ta_map;
+   uint32_t ta_capacity;
+   /*
+    * Current write cursor into the TA BO.  Each draw appends its TA
+    * packet stream at ta_used_offset and advances the cursor.  Without
+    * this, every draw would overwrite offset 0 and all DRAW commands
+    * in the batch would reference the same (last-written) geometry.
+    * Reset to 0 on flush.
+    */
+   uint32_t ta_used_offset;
+
+   /*
+    * Fence fd from the previous submit, kept open until the submit
+    * after next so the CPU can wait for GPU completion before
+    * re-writing the cmd/TA BO.  -1 when no previous submit exists.
+    */
+   int prev_fence_fd;
+};
+
+/* bound shader state */
+struct prismrv_shader_state {
+   void *nir;               /* nir_shader after gallium translation */
+   char *usse_text;         /* compiled USSE text */
+   unsigned usse_len;
+};
+
+struct prismrv_vertex_element {
+   unsigned src_offset;
+   enum pipe_format src_format;
+   unsigned vertex_buffer_index;
+   uint32_t src_stride;             /* stride to the same attrib in the next vertex */
+};
+
+struct prismrv_sampler_view {
+   struct pipe_sampler_view base;
+};
+
+/* fixed-function state (shipped to the executor via SET_* packets) */
+struct prismrv_blend_state {
+   bool blend_enable;
+   unsigned rgb_func, rgb_src, rgb_dst;
+};
+
+struct prismrv_rasterizer_state {
+   bool scissor_enable;
+   unsigned cull_face;          /* PIPE_FACE_* */
+   bool front_ccw;
+};
+
+struct prismrv_depth_stencil_alpha_state {
+   bool depth_enabled;
+   bool depth_writemask;
+   unsigned depth_func;         /* PIPE_FUNC_* */
+};
+
+#define PRISMRV_MAX_VIEWPORTS 16
+
+struct prismrv_context {
+   struct pipe_context base;
+   struct prismrv_screen *screen;
+
+   struct prismrv_batch batch;
+   struct blitter_context *blitter;
+   struct u_upload_mgr *uploader;
+
+   struct pipe_framebuffer_state framebuffer;
+   struct pipe_scissor_state scissors[PRISMRV_MAX_VIEWPORTS];
+
+   /* bound shaders */
+   struct prismrv_shader_state vs;
+   struct prismrv_shader_state fs;
+
+   /* fixed-function state */
+   struct prismrv_blend_state blend;
+   struct prismrv_rasterizer_state raster;
+   struct prismrv_depth_stencil_alpha_state depth;
+
+   /* bound texture views (slot -> resource), consumed by SET_TEXTURE */
+   /* pipe_resource refs held for the lifetime of the sampler binding.
+    * Released on unbind and on context destroy. */
+   struct pipe_resource *textures[8];
+
+   /* set to true when a submit fails; draw_vbo returns immediately until
+    * the context is destroyed and re-created */
+   bool context_lost;
+
+   /* vertex elements */
+   struct prismrv_vertex_element vertex_elements[8];
+   unsigned num_vertex_elements;
+
+   /* bound vertex buffers (set_vertex_buffers) */
+   struct pipe_vertex_buffer vertex_buffers[8];
+   unsigned num_vertex_buffers;
+
+   /* constant buffer data (one slot per stage; shipped as
+    * VS-block-then-FS-block inside SET_UNIFORMS) */
+   float vs_constants[4 * 64];   /* up to 64 vec4 uniforms per stage */
+   float fs_constants[4 * 64];
+   unsigned num_vs_constants;
+   unsigned num_fs_constants;
+};
+
+static inline const struct pipe_framebuffer_state *
+prismrv_framebuffer(struct prismrv_context *ctx)
+{
+   return &ctx->framebuffer;
+}
+
+struct pipe_context *
+prismrv_context_create(struct pipe_screen *pscreen, void *priv,
+                       unsigned flags);
+
+void prismrv_batch_init_context(struct prismrv_context *ctx);
+void prismrv_context_init(struct prismrv_context *ctx);
+
+#endif /* PRISMRV_CONTEXT_H_ */

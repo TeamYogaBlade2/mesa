@@ -86,7 +86,7 @@ option(
   choices : [
     'all', 'auto',
     'asahi', 'crocus', 'd3d12', 'ethosu', 'etnaviv', 'freedreno', 'i915', 'iris',
-    'lima', 'llvmpipe', 'nouveau', 'panfrost', 'r300', 'r600', 'radeonsi',
+    'lima', 'llvmpipe', 'nouveau', 'panfrost', 'prismrv', 'r300', 'r600', 'radeonsi',
     'rocket', 'softpipe', 'svga', 'tegra', 'v3d', 'vc4', 'virgl', 'zink',
   ],
   description : 'List of gallium drivers to build. If this is set to auto ' +

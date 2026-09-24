@@ -1,0 +1,310 @@
+name: PrismRV-CI
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [prismrv-oxalpha]
+    paths:
+      - 'src/gallium/drivers/prismrv/**'
+      - 'src/gallium/meson.build'
+      - 'meson.options'
+      - '.github/workflows/prismrv.yml'
+  pull_request:
+    branches: [prismrv-oxalpha]
+    paths:
+      - 'src/gallium/drivers/prismrv/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prismrv-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  meson-build:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bison flex ninja-build pkg-config \
+          libdrm-dev libexpat1-dev zlib1g-dev \
+          libegl1-mesa-dev libgles2-mesa-dev libglvnd-dev \
+        && python3 -m pip install mako meson pyyaml ply
+
+    - name: Configure (prismrv only, minimal)
+      run: |
+        meson setup build \
+          -Dgallium-drivers=prismrv \
+          -Dgallium-extra-hud=false \
+          -Dvulkan-drivers=[] \
+          -Dglx=disabled \
+          -Dplatforms=[] \
+          -Degl=enabled \
+          -Dgbm=disabled \
+          -Dopengl=true \
+          -Dgles1=disabled \
+          -Dgles2=enabled \
+          -Dllvm=disabled \
+          -Dshared-glapi=enabled \
+          -Dxmlconfig=disabled \
+          -Dtools=drm-shim \
+          -Dbuild-tests=true
+
+    - name: Build
+      run: ninja -C build
+
+    - name: Run prismrv NIR test
+      run: meson test -C build prismrv-nir --print-errorlogs
+
+    - name: drm-shim smoke test (EGL surfaceless + real driver)
+      run: |
+        meson test -C build prismrv-smoke --print-errorlogs || {
+          echo "::warning::smoke test failed — retrying with debug output"
+          # run the binary directly to capture the shim/driver logs
+          LD_PRELOAD=$(ls build/src/gallium/drivers/prismrv/*.so \
+                         build/src/gallium/drivers/prismrv/drm-shim/*.so 2>/dev/null | head -1) \
+          EGL_PLATFORM=surfaceless \
+          MESA_LOADER_DRIVER_OVERRIDE=prismrv \
+          DRM_SHIM_DEBUG=1 \
+          LIBGL_DEBUG=verbose MESA_DEBUG=1 \
+          ./build/src/gallium/drivers/prismrv/tests/prismrv_smoke || true
+          exit 1
+        }
+
+  syntax-only:
+    runs-on: ubuntu-22.04
+    steps:
+    - uses: actions/checkout@v4
+    - name: Syntax check (clang -fsyntax-only)
+      run: |
+        sudo apt-get install -y clang
+        for f in src/gallium/drivers/prismrv/*.c; do
+          echo "checking $f"
+          clang -fsyntax-only -std=c11 \
+            -DHAVE_ENDIAN_H -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC \
+            -DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0 \
+            -D_GNU_SOURCE -DNDEBUG \
+            -Isrc/gallium/include -Isrc/gallium/auxiliary \
+            -Isrc/compiler/nir/generated -Isrc/compiler/generated \
+            -Isrc -Isrc/compiler/nir -Isrc/compiler -Isrc/util -Iinclude \
+            "$f" || exit 1
+        done
+
+  # Cross-compile the driver for the real hardware target:
+  # Lenovo Yoga Tablet 8 B8000-F (MT6589, ARMv7 Cortex-A9 + NEON, SGX544 GPU).
+  # Produces a drop-in tarball (gallium_dri.so mega-driver incl. prismrv,
+  # libEGL, libglapi) and publishes it to GitHub Releases.
+  armhf-release:
+    runs-on: ubuntu-22.04
+    needs: [meson-build, syntax-only]
+    permissions:
+      contents: write
+    env:
+      CROSS_TRIPLET: arm-linux-gnueabihf
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install native + cross (armhf) dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          bison flex ninja-build pkg-config \
+          gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+        python3 -m pip install mako meson pyyaml ply
+
+    # Build a private armhf sysroot WITHOUT touching the host's apt state:
+    # an isolated sources list lets `apt-get download` fetch the exact jammy
+    # armhf debs (libdrm 2.4.110 satisfies mesa's >= 2.4.109), and we unpack
+    # them by hand. Zero dependency resolution, nothing multiarch-installed.
+    - name: Assemble armhf sysroot from Ubuntu Ports debs
+      run: |
+        set -euxo pipefail
+        mkdir -p /tmp/armhf-apt/lists/partial /tmp/armhf-apt/cache/archives/partial \
+                 /opt/sysroot-armhf
+        : > /tmp/armhf-apt/status
+        echo "deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main" > /tmp/armhf-apt/sources.list
+        sudo apt-get update \
+          -o Dir::Etc::sourcelist=/tmp/armhf-apt/sources.list \
+          -o Dir::Etc::sourceparts=/dev/null \
+          -o Dir::State::lists=/tmp/armhf-apt/lists \
+          -o Dir::Cache=/tmp/armhf-apt/cache \
+          -o Dir::State::status=/tmp/armhf-apt/status
+        cd /tmp/armhf-apt
+        # libdrm/zlib: link deps. xcb/x11 family: needed once -Dplatforms=x11
+        # is on (src/meson.build only builds the dril dri target then, which
+        # carries the __driDriverGetExtensions_prismrv entrypoint)
+        for p in libdrm2 libdrm-dev libdrm-nouveau2 libdrm-radeon1 libdrm-amdgpu1 \
+                 zlib1g zlib1g-dev \
+                 libxcb1 libxcb1-dev libx11-xcb1 libx11-xcb-dev \
+                 libxcb-dri3-0 libxcb-dri3-dev libxcb-present0 libxcb-present-dev \
+                 libxcb-shm0 libxcb-shm0-dev libxcb-sync1 libxcb-sync-dev \
+                 libxcb-xfixes0 libxcb-xfixes0-dev \
+                 libxcb-randr0 libxcb-randr0-dev \
+                 libxcb-render0 libxcb-render0-dev \
+                 libxcb-shape0 libxcb-shape0-dev \
+                 libx11-6 libx11-dev libx11-xcb1 libx11-xcb-dev \
+                 libxext6 libxext-dev \
+                 libxau6 libxau-dev libxdmcp6 libxdmcp-dev \
+                 x11proto-dev xtrans-dev \
+                 libxshmfence1 libxshmfence-dev \
+                 libbsd0 libmd0 libpthread-stubs0-dev; do
+          apt-get download "$p" \
+            -o APT::Architecture=armhf \
+            -o APT::Architectures=armhf \
+            -o Dir::Etc::sourcelist=/tmp/armhf-apt/sources.list \
+            -o Dir::Etc::sourceparts=/dev/null \
+            -o Dir::State::lists=/tmp/armhf-apt/lists \
+            -o Dir::Cache=/tmp/armhf-apt/cache \
+            -o Dir::State::status=/tmp/armhf-apt/status
+        done
+        for deb in *.deb; do dpkg-deb -x "$deb" /opt/sysroot-armhf; done
+        ls /opt/sysroot-armhf/usr/lib/arm-linux-gnueabihf/pkgconfig/
+
+    - name: Write cross file
+      run: |
+        cat > armhf.cross <<EOF
+        [binaries]
+        c = '${CROSS_TRIPLET}-gcc'
+        cpp = '${CROSS_TRIPLET}-g++'
+        ar = '${CROSS_TRIPLET}-ar'
+        strip = '${CROSS_TRIPLET}-strip'
+        nm = '${CROSS_TRIPLET}-nm'
+        pkg-config = '${CROSS_TRIPLET}-pkg-config'
+
+        [host_machine]
+        system = 'linux'
+        cpu_family = 'arm'
+        cpu = 'armv7-a'
+        endian = 'little'
+
+        [properties]
+        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI.
+        # -I: meson drops the sysroot-prefix include coming from libdrm.pc,
+        #     hiding /usr/include/xf86drm.h
+        # -DGALLIUM_PRISMRV: make sure the driver descriptor block in
+        #     drm_helper.h is compiled into the dri target regardless of
+        #     how the dependency's compile_args propagate
+        c_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
+                  '-I/opt/sysroot-armhf/usr/include',
+                  '-DGALLIUM_PRISMRV']
+        cpp_args = ['-march=armv7-a', '-mfpu=neon', '-mfloat-abi=hard',
+                    '-I/opt/sysroot-armhf/usr/include',
+                    '-DGALLIUM_PRISMRV']
+
+        [built-in options]
+        c_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                       '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                       '-Wl,--no-gc-sections']
+        cpp_link_args = ['-L/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                         '-Wl,-rpath-link,/opt/sysroot-armhf/usr/lib/${CROSS_TRIPLET}',
+                         '-Wl,--no-gc-sections']
+        EOF
+        # Multiarch pkg-config wrapper: resolve .pc files inside the armhf
+        # sysroot (SYSROOT_DIR rewrites the /usr prefix baked into the .pc)
+        printf '#!/bin/sh\nPKG_CONFIG_LIBDIR="/opt/sysroot-armhf/usr/lib/%s/pkgconfig:/opt/sysroot-armhf/usr/share/pkgconfig" PKG_CONFIG_SYSROOT_DIR=/opt/sysroot-armhf exec pkg-config "$@"\n' "${CROSS_TRIPLET}" | \
+          sudo tee /usr/local/bin/${CROSS_TRIPLET}-pkg-config > /dev/null
+        sudo chmod +x /usr/local/bin/${CROSS_TRIPLET}-pkg-config
+
+    - name: Configure cross build (prismrv + EGL)
+      run: |
+        meson setup build-arm \
+          --cross-file armhf.cross \
+          -Dgallium-drivers=prismrv \
+          -Dgallium-extra-hud=false \
+          -Dvulkan-drivers=[] \
+          -Dglx=disabled \
+          -Dplatforms=x11 \
+          -Degl=enabled \
+          -Dgbm=disabled \
+          -Dopengl=true \
+          -Dgles1=disabled \
+          -Dgles2=disabled \
+          -Dllvm=disabled \
+          -Dshared-glapi=enabled \
+          -Dxmlconfig=disabled \
+          -Dxlib-lease=disabled \
+          -Dtools=[]
+
+    - name: Build
+      run: ninja -C build-arm
+
+    - name: Stage install tree
+      run: |
+        meson install -C build-arm --destdir stage
+        STAGE="$(pwd)/build-arm/stage"
+        # dril installs <libdir>/dri/<name>_dri.so as copies of its own
+        # megadriver; with -Dplatforms=x11 it is built and carries the
+        # __driDriverGetExtensions_prismrv entrypoint. Verify, and fall back
+        # to a symlink of the gallium megadriver if it is missing.
+        if ! find "${STAGE}" -name 'prismrv_dri.so' | grep -q .; then
+          GALLIUM_SO="$(basename "$(find "${STAGE}" -name 'libgallium-*.so' | head -1)")"
+          test -n "${GALLIUM_SO}"
+          mkdir -p "${STAGE}/usr/local/lib/dri"
+          ln -sf "../${GALLIUM_SO}" "${STAGE}/usr/local/lib/dri/prismrv_dri.so"
+        fi
+        PRISMRV_SO="$(find "${STAGE}" -name 'prismrv_dri.so' | head -1)"
+        test -n "${PRISMRV_SO}"
+        # fatal if the loader entrypoint is not exported
+        arm-linux-gnueabihf-nm -D "${PRISMRV_SO}" > /tmp/nm.txt
+        grep -F '__driDriverGetExtensions_prismrv' /tmp/nm.txt \
+          || { echo "prismrv entrypoint missing; dynamic symbols:"; cat /tmp/nm.txt; exit 1; }
+        SHORT_SHA="${GITHUB_SHA::7}"
+        {
+          echo "PrismRV Mesa ${SHORT_SHA} (armhf)"
+          echo ""
+          echo "Target  : Lenovo Yoga Tablet 8 B8000-F (MT6589 / SGX544)"
+          echo "ABI     : linux armv7-a + NEON, hard-float"
+          echo "Source  : teamYogaBlade2/mesa @ prismrv-oxalpha, commit ${GITHUB_SHA}"
+          echo "Options : gallium-drivers=prismrv, egl=enabled, platforms=x11,"
+          echo "          glx/gbm/xmlconfig disabled (surfaceless still usable)"
+          echo ""
+          echo "Layout:"
+          echo "  usr/local/lib/libgallium-<ver>.so   mega driver (prismrv entrypoint)"
+          echo "  usr/local/lib/dri/prismrv_dri.so -> mega driver"
+          echo "  usr/local/lib/libEGL.so.1           EGL (use EGL_PLATFORM=surfaceless)"
+          echo "  usr/local/include/                  EGL/GL/KHR headers"
+          echo ""
+          echo "Copy usr/ over /usr on the tablet, or point LD_LIBRARY_PATH at the"
+          echo "lib dir. If the dri loader cannot find the driver:"
+          echo "  export LIBGL_DRIVERS_PATH=/usr/local/lib/dri"
+        } > "${STAGE}/prismrv-mesa-README.txt"
+        find "${STAGE}" -type f -o -type l | sort
+
+    - name: Pack tarball
+      run: |
+        SHORT_SHA="${GITHUB_SHA::7}"
+        tar -C build-arm/stage -cJf "prismrv-mesa-${SHORT_SHA}-armhf.tar.xz" .
+        ls -lh prismrv-mesa-*.tar.xz
+
+    - name: Upload artifact (debug convenience)
+      uses: actions/upload-artifact@v4
+      with:
+        name: prismrv-mesa-${{ github.sha }}-armhf
+        path: prismrv-mesa-*-armhf.tar.xz
+        retention-days: 14
+
+    - name: Publish to GitHub Releases
+      uses: softprops/action-gh-release@v2
+      with:
+        tag_name: prismrv-continuous-${{ github.sha }}
+        name: PrismRV continuous ${{ github.sha }}
+        body: |
+          Continuous build of the PrismRV Gallium driver for
+          Lenovo Yoga Tablet 8 B8000-F (MT6589, SGX544).
+
+          - branch: prismrv-oxalpha
+          - commit: ${{ github.sha }}
+          - target: linux armv7-a hard-float (NEON)
+          - contents: prismrv_dri.so (dri driver), libEGL.so.1 (x11 +
+            surfaceless platforms), libgallium, EGL/GL headers
+
+          Unpack and copy usr/ over /usr, or point LD_LIBRARY_PATH at the
+          lib directory. Use EGL_PLATFORM=surfaceless.
+        files: prismrv-mesa-*-armhf.tar.xz
+        prerelease: true
+        make_latest: false
