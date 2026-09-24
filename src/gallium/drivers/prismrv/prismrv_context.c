@@ -44,19 +44,25 @@ prismrv_context_flush(struct pipe_context *pctx,
                            ctx->batch.ta_handle ? bos : NULL,
                            ctx->batch.ta_handle ? 1 : 0, &out_fd);
       ctx->batch.cmd_size = 0;
+      ctx->batch.ta_used_offset = 0;
+
       if (ret) {
-         debug_printf("prismrv: submit failed (%d)\n", ret);
+         debug_printf("prismrv: submit failed (%d) — context may be lost\n", ret);
+         ctx->context_lost = true;
          out_fd = -1;
       } else if (out_fd >= 0) {
          /*
-          * Keep prev_fence_fd for prismrv_batch_begin() to wait on
-          * before the CPU writes into cmd_map for the next frame.
-          * Use dup() so the internal copy and the caller's copy have
-          * independent lifetimes.
+          * Keep a dup'd copy for batch_begin() to poll before writing
+          * the next frame into the same BO.
           */
-         if (ctx->batch.prev_fence_fd >= 0)
-            close(ctx->batch.prev_fence_fd);
-         ctx->batch.prev_fence_fd = dup(out_fd);
+         int dup_fd = dup(out_fd);
+         if (dup_fd < 0) {
+            debug_printf("prismrv: dup(fence) failed — BO reuse fence lost\n");
+         } else {
+            if (ctx->batch.prev_fence_fd >= 0)
+               close(ctx->batch.prev_fence_fd);
+            ctx->batch.prev_fence_fd = dup_fd;
+         }
       }
    }
 
@@ -243,6 +249,10 @@ prismrv_draw_vbo(struct pipe_context *pctx,
         info->mode != MESA_PRIM_POINTS) || !ctx->num_vertex_elements)
       return;
 
+   /* bail out after an unrecoverable submit error */
+   if (ctx->context_lost)
+      return;
+
    /*
     * prismrv_batch_begin(): wait for the previous GPU job before writing
     * new commands into cmd_map.
@@ -262,12 +272,25 @@ prismrv_draw_vbo(struct pipe_context *pctx,
     */
    if (ctx->batch.cmd_size == 0 && ctx->batch.prev_fence_fd >= 0) {
       struct pollfd pfd = { .fd = ctx->batch.prev_fence_fd, .events = POLLIN };
-      int pr = poll(&pfd, 1, 5000); /* 5 s timeout: GPU should never hang this long */
-      if (pr < 0 || !(pfd.revents & (POLLIN | POLLERR | POLLHUP)))
-         debug_printf("prismrv: batch_begin fence wait failed (ret=%d revents=%x)\n",
-                      pr, pfd.revents);
+      int pr = poll(&pfd, 1, 5000);
+      bool gpu_done = (pr > 0) && (pfd.revents & (POLLIN | POLLERR | POLLHUP));
+
       close(ctx->batch.prev_fence_fd);
       ctx->batch.prev_fence_fd = -1;
+
+      if (!gpu_done) {
+         /*
+          * GPU did not finish in time.  Returning here prevents the
+          * CPU from overwriting the BO while the GPU is still reading
+          * it.  The caller (state tracker) will re-flush on the next
+          * frame; the batch remains empty so no corrupted draw is
+          * submitted.
+          */
+         debug_printf("prismrv: batch_begin GPU wait failed "
+                      "(poll=%d revents=%x) — skipping draw to avoid BO race\n",
+                      pr, pfd.revents);
+         return;
+      }
    }
 
    /* indexed draw: expand the index buffer into a vertex list first */
@@ -344,37 +367,58 @@ prismrv_draw_vbo(struct pipe_context *pctx,
    }
 
    /* build the layer-2 TA packet stream into the TA BO */
+   /* TA BO: lazy allocation */
    if (!ctx->batch.ta_handle) {
-      ctx->batch.ta_capacity = 64 * 1024;
+      ctx->batch.ta_capacity = 256 * 1024; /* 256 KB for multiple draws */
       ctx->batch.ta_handle =
          prismrv_drm_gem_create(screen->fd, ctx->batch.ta_capacity);
       ctx->batch.ta_map =
          prismrv_drm_gem_map(screen->fd, ctx->batch.ta_handle,
                              ctx->batch.ta_capacity);
+      ctx->batch.ta_used_offset = 0;
    }
    if (!ctx->batch.ta_map || ctx->batch.ta_map == MAP_FAILED) {
       free(verts);
       return;
    }
 
+   /*
+    * Each draw appends its TA packet stream at ta_used_offset and
+    * advances the cursor.  This ensures that batch-internal draws
+    * reference distinct regions of the TA BO.
+    *
+    * The DRAW command encodes ta_used_offset so the executor knows
+    * which region belongs to this draw call.
+    */
    {
       unsigned mode = info->mode == MESA_PRIM_POINTS ? 0 :
                       info->mode == MESA_PRIM_LINES ? 1 : 2;
+      uint32_t available =
+         (ctx->batch.ta_capacity - ctx->batch.ta_used_offset) / 4;
 
       ta_len = prismrv_pack_ta_packets(
-         (uint32_t *)ctx->batch.ta_map, ctx->batch.ta_capacity / 4,
-         verts, nverts, ncomp, mode);
+         (uint32_t *)(ctx->batch.ta_map + ctx->batch.ta_used_offset),
+         available, verts, nverts, ncomp, mode);
+
       if (!ta_len) {
+         /*
+          * TA BO full: flush the current batch so the GPU can consume
+          * the already-enqueued draws, then retry with a fresh cursor.
+          */
+         struct pipe_fence_handle *flush_fence = NULL;
          free(verts);
-         debug_printf("prismrv: TA packet stream does not fit\n");
+         prismrv_context_flush(pctx, &flush_fence, 0);
+         if (flush_fence) {
+            pctx->screen->fence_finish(pctx->screen, pctx, flush_fence,
+                                       UINT64_MAX);
+            pctx->screen->fence_reference(pctx->screen, &flush_fence, NULL);
+         }
+         /* cursor was reset by flush; re-enter draw_vbo */
+         debug_printf("prismrv: TA BO full — flushed, caller must retry\n");
          return;
       }
    }
    free(verts);
-   /* clear anything past the new stream so a stale packet from an
-    * earlier, longer draw can never be parsed */
-   memset(ctx->batch.ta_map + ta_len, 0,
-          ctx->batch.ta_capacity - ta_len);
 
       /* layer-1 stream in the cmd BO: SET_RT + SET_PROG_* + DRAW */
       {
@@ -466,25 +510,36 @@ prismrv_draw_vbo(struct pipe_context *pctx,
             out[off++] = tex->gem_handle;
          }
 
-         /* DRAW: userspace does not know GPU VAs (the kernel bump
-          * allocator assigns them), so ta_va is left 0 here and the
-          * kernel publishes the TA BO's GPU VA in CCB data[2]
-          * (REVIEW R1/R2 resolution).  HookBackend-style executors
-          * that own their VA space may patch the field instead. */
+         /*
+          * DRAW: ta_va is the byte offset within the TA BO at which
+          * THIS draw's packet stream starts.  The kernel encodes the
+          * TA BO's base GPU VA in CCB data[2]; the executor adds
+          * ta_used_offset to get the per-draw address.
+          *
+          * Using a 32-bit offset (not a full 64-bit GPU VA) is safe
+          * because the TA BO is a single allocation < 4 GiB and the
+          * GPU VA space is 32-bit on SGX544.
+          *
+          * Payload layout (opcode 5):
+          *   words[0..1] = ta_byte_offset (u64 for ABI compat, hi=0)
+          *   words[2]    = ta_len in bytes
+          *   words[3]    = first vertex index
+          */
          out[off++] = 5; out[off++] = sizeof(uint64_t)/4 + 2;
-         memset(out + off, 0, 8); off += 2;
-         /* payload layout: ta_va(u64), ta_len(u32), first(u32).
-          * ta_va=0 (kernel publishes the real VA in CCB data[2]);
-          * ta_len MUST be the byte length of the TA stream — the
-          * executor slices the TA BO with it.  The old code wrote
-          * draws->start into this slot (and left 'first'
-          * uninitialised), so every draw parsed as an empty stream. */
+         out[off++] = ctx->batch.ta_used_offset;  /* lo32 */
+         out[off++] = 0;                           /* hi32 always 0 */
          out[off++] = ta_len;
          out[off++] = draws->start;
          /* BARRIER */
          out[off++] = 6; out[off++] = 0;
 
          ctx->batch.cmd_size += off * 4;
+
+         /* Advance the TA cursor so the next draw in this batch writes
+          * to a different region of the TA BO. */
+         ctx->batch.ta_used_offset += ta_len;
+         /* Align to 4 bytes for the next draw's header */
+         ctx->batch.ta_used_offset = (ctx->batch.ta_used_offset + 3) & ~3u;
    }
 }
 

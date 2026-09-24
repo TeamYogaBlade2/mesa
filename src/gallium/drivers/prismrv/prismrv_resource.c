@@ -179,9 +179,13 @@ prismrv_transfer_map(struct pipe_context *pctx,
          .events = POLLIN,
       };
       int pr = poll(&pfd, 1, 5000);
-      if (pr < 0 || !(pfd.revents & (POLLIN | POLLERR | POLLHUP)))
-         debug_printf("prismrv: transfer_map fence wait failed "
-                      "(ret=%d revents=%x)\n", pr, pfd.revents);
+      bool gpu_done = (pr > 0) && (pfd.revents & (POLLIN | POLLERR | POLLHUP));
+      if (!gpu_done) {
+         debug_printf("prismrv: transfer_map GPU wait failed "
+                      "(ret=%d revents=%x) — refusing CPU write to avoid race\n",
+                      pr, pfd.revents);
+         return NULL;
+      }
       /* leave prev_fence_fd open: batch_begin() will close it */
    }
 

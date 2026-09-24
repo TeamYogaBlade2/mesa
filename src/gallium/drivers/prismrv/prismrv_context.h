@@ -20,6 +20,14 @@ struct prismrv_batch {
    uint32_t ta_handle;
    uint8_t *ta_map;
    uint32_t ta_capacity;
+   /*
+    * Current write cursor into the TA BO.  Each draw appends its TA
+    * packet stream at ta_used_offset and advances the cursor.  Without
+    * this, every draw would overwrite offset 0 and all DRAW commands
+    * in the batch would reference the same (last-written) geometry.
+    * Reset to 0 on flush.
+    */
+   uint32_t ta_used_offset;
 
    /*
     * Fence fd from the previous submit, kept open until the submit
@@ -91,6 +99,10 @@ struct prismrv_context {
    /* pipe_resource refs held for the lifetime of the sampler binding.
     * Released on unbind and on context destroy. */
    struct pipe_resource *textures[8];
+
+   /* set to true when a submit fails; draw_vbo returns immediately until
+    * the context is destroyed and re-created */
+   bool context_lost;
 
    /* vertex elements */
    struct prismrv_vertex_element vertex_elements[8];
