@@ -57,7 +57,8 @@ prismrv_context_flush(struct pipe_context *pctx,
           */
          int dup_fd = dup(out_fd);
          if (dup_fd < 0) {
-            debug_printf("prismrv: dup(fence) failed — BO reuse fence lost\n");
+            debug_printf("prismrv: dup(fence) failed — context lost\n");
+            ctx->context_lost = true;
          } else {
             if (ctx->batch.prev_fence_fd >= 0)
                close(ctx->batch.prev_fence_fd);
@@ -439,14 +440,24 @@ prismrv_draw_vbo(struct pipe_context *pctx,
                + 8 * 6 * 4
                + 5 * 4 + 2 * 4;
             if (ctx->batch.cmd_size + need > ctx->batch.cmd_capacity) {
+               if (need > ctx->batch.cmd_capacity) {
+                  /*
+                   * A single draw's command stream exceeds the entire
+                   * cmd BO capacity (e.g. a shader with > 64 KB of text).
+                   * We cannot flush-and-retry here because the next attempt
+                   * would hit the same limit.  Skip this draw and log.
+                   */
+                  debug_printf("prismrv: single draw exceeds cmd BO capacity "
+                               "(%u > %u) — draw dropped\n",
+                               need, ctx->batch.cmd_capacity);
+                  goto skip_draw;
+               }
                /* flush what we have and start a fresh command buffer */
                struct pipe_fence_handle *fence = NULL;
                prismrv_context_flush(pctx, &fence, 0);
                if (fence) {
                   pctx->screen->fence_finish(pctx->screen, pctx, fence,
                                              UINT64_MAX);
-                  /* release the reference returned by flush; without
-                   * this the fence fd is never closed (fd leak) */
                   pctx->screen->fence_reference(pctx->screen, &fence, NULL);
                }
                ctx->batch.cmd_size = 0;
@@ -541,6 +552,11 @@ prismrv_draw_vbo(struct pipe_context *pctx,
          /* Align to 4 bytes for the next draw's header */
          ctx->batch.ta_used_offset = (ctx->batch.ta_used_offset + 3) & ~3u;
    }
+   return;
+
+skip_draw:
+   /* single-draw cmd overflow: free vertex data and return cleanly */
+   ;
 }
 
 static void
@@ -807,6 +823,16 @@ prismrv_context_destroy(struct pipe_context *pctx)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
+   /* Release owned USSE text copies */
+   if (ctx->vs_usse_owned) {
+      ralloc_free(ctx->vs_usse_owned);
+      ctx->vs_usse_owned = NULL;
+   }
+   if (ctx->fs_usse_owned) {
+      ralloc_free(ctx->fs_usse_owned);
+      ctx->fs_usse_owned = NULL;
+   }
+
    /* Release sampler texture references */
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->textures); i++)
       pipe_resource_reference(&ctx->textures[i], NULL);
@@ -878,6 +904,26 @@ prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
    }
 
    memcpy(&ctx->vs, state, sizeof(ctx->vs));
+   /*
+    * ctx->vs.usse_text now points into the shader state object.  If the
+    * state is deleted while this context still holds it as the current
+    * VS, ralloc_free(s->usse_text) in delete_vs_state would leave
+    * ctx->vs.usse_text dangling.  Duplicate the text so ctx->vs owns
+    * its copy independently of the shader state lifetime.
+    */
+   if (ctx->vs.usse_text) {
+      char *owned = ralloc_strdup(NULL, ctx->vs.usse_text);
+      /* free any previously owned copy */
+      if (ctx->vs_usse_owned)
+         ralloc_free(ctx->vs_usse_owned);
+      ctx->vs_usse_owned = owned;
+      ctx->vs.usse_text  = owned;
+   } else {
+      if (ctx->vs_usse_owned) {
+         ralloc_free(ctx->vs_usse_owned);
+         ctx->vs_usse_owned = NULL;
+      }
+   }
 }
 
 static void
@@ -917,6 +963,18 @@ prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
    }
 
    memcpy(&ctx->fs, state, sizeof(ctx->fs));
+   if (ctx->fs.usse_text) {
+      char *owned = ralloc_strdup(NULL, ctx->fs.usse_text);
+      if (ctx->fs_usse_owned)
+         ralloc_free(ctx->fs_usse_owned);
+      ctx->fs_usse_owned = owned;
+      ctx->fs.usse_text  = owned;
+   } else {
+      if (ctx->fs_usse_owned) {
+         ralloc_free(ctx->fs_usse_owned);
+         ctx->fs_usse_owned = NULL;
+      }
+   }
 }
 
 static void
@@ -964,25 +1022,38 @@ prismrv_create_vertex_elements(struct pipe_context *pctx,
                                unsigned num_elems,
                                const struct pipe_vertex_element *elems)
 {
-   struct prismrv_context *ctx = to_prismrv_context(pctx);
-   ctx->num_vertex_elements = num_elems;
-   for (unsigned i = 0; i < num_elems && i < 8; i++) {
-      ctx->vertex_elements[i].src_offset = elems[i].src_offset;
-      ctx->vertex_elements[i].src_format = elems[i].src_format;
-      ctx->vertex_elements[i].vertex_buffer_index = elems[i].vertex_buffer_index;
-      ctx->vertex_elements[i].src_stride = elems[i].src_stride;
+   struct prismrv_vertex_element_state *cso =
+      CALLOC_STRUCT(prismrv_vertex_element_state);
+   if (!cso)
+      return NULL;
+   cso->num_elements = MIN2(num_elems, 8u);
+   for (unsigned i = 0; i < cso->num_elements; i++) {
+      cso->elements[i].src_offset          = elems[i].src_offset;
+      cso->elements[i].src_format          = elems[i].src_format;
+      cso->elements[i].vertex_buffer_index = elems[i].vertex_buffer_index;
+      cso->elements[i].src_stride          = elems[i].src_stride;
    }
-   return (void *)(uintptr_t)(num_elems | 1);  /* non-NULL cookie */
+   return cso;
 }
 
 static void
 prismrv_bind_vertex_elements(struct pipe_context *pctx, void *state)
 {
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+   struct prismrv_vertex_element_state *cso = state;
+   if (cso) {
+      ctx->num_vertex_elements = cso->num_elements;
+      memcpy(ctx->vertex_elements, cso->elements,
+             cso->num_elements * sizeof(ctx->vertex_elements[0]));
+   } else {
+      ctx->num_vertex_elements = 0;
+   }
 }
 
 static void
 prismrv_delete_vertex_elements(struct pipe_context *pctx, void *state)
 {
+   FREE(state);
 }
 
 void

@@ -37,6 +37,12 @@ struct prismrv_batch {
    int prev_fence_fd;
 };
 
+/* vertex element CSO — one per VAO, allocated in create, freed in delete */
+struct prismrv_vertex_element_state {
+   unsigned num_elements;
+   struct prismrv_vertex_element elements[8];
+};
+
 /* bound shader state */
 struct prismrv_shader_state {
    void *nir;               /* nir_shader after gallium translation */
@@ -89,6 +95,10 @@ struct prismrv_context {
    /* bound shaders */
    struct prismrv_shader_state vs;
    struct prismrv_shader_state fs;
+   /* Privately-owned duplicates of vs.usse_text / fs.usse_text so
+    * that deleting the original shader state does not dangle ctx->vs. */
+   char *vs_usse_owned;
+   char *fs_usse_owned;
 
    /* fixed-function state */
    struct prismrv_blend_state blend;
