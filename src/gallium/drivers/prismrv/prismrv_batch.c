@@ -17,7 +17,8 @@ prismrv_batch_init_context(struct prismrv_context *ctx)
    ctx->batch.prev_fence_fd = -1;
    ctx->batch.ta_used_offset = 0;
    ctx->batch.cmd_handle =
-      prismrv_drm_gem_create(screen->fd, ctx->batch.cmd_capacity);
+      prismrv_drm_gem_create(screen->fd, ctx->batch.cmd_capacity,
+                             &ctx->batch.cmd_gpu_va);
    if (!ctx->batch.cmd_handle)
       return;
    ctx->batch.cmd_map =

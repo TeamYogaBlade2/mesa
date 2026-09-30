@@ -65,6 +65,12 @@ prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
    case PRISMRV_PARAM_ERRATA:
       gp->value = SHIM_ERRATA;
       return 0;
+   case PRISMRV_PARAM_UAPI_VERSION:
+      gp->value = PRISMRV_UAPI_VERSION;
+      return 0;
+   case PRISMRV_PARAM_CMD_ABI:
+      gp->value = PRISMRV_CMD_ABI_STREAM_V1;
+      return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_PRISMRV_GET_PARAM %u\n", gp->param);
       return -1;
@@ -83,6 +89,14 @@ prismrv_ioctl_gem_create(int fd, unsigned long request, void *arg)
    drm_shim_bo_init(bo, size);
 
    create->handle = drm_shim_bo_get_handle(shim_fd, bo);
+   /* fixed, page-aligned GPU VA per BO (bump allocator, like the kernel) */
+   {
+      static uint32_t next_va = 0x10000000u;
+
+      create->gpu_va = next_va;
+      create->pad = 0;
+      next_va += size;
+   }
 
    drm_shim_bo_put(bo);
 

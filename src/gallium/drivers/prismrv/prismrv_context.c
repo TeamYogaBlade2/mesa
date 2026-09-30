@@ -3,6 +3,42 @@
  * SPDX-License-Identifier: MIT
  *
  * prismrv_context.c — pipe_context implementation.
+ *
+ * Command stream ABI (PRISMRV_CMD_ABI_STREAM_V1)
+ * ==============================================
+ * This driver produces the PrismRV command stream, which is consumed by
+ * the PrismRV executor (emulator UMD/uKernel, libprismrv.py).  The stock
+ * vendor uKernel does not understand it, and the Linux kernel does not
+ * interpret it: the kernel only maps the BOs of the job and forwards
+ * their GPU virtual addresses.  All addresses inside the stream are GPU
+ * VAs taken from GEM_CREATE (never GEM handles).
+ *
+ *   layer 1 (cmd BO):  [u32 opcode][u32 words][payload...]
+ *     0  NOP
+ *     1  SET_RT        {w, h, gpu_va, stride_bytes, pipe_format}
+ *                      (first two words are what older executors read)
+ *     2  SET_PROG_VS   {usse text, NUL-padded}
+ *     3  SET_PROG_FS   {usse text, NUL-padded}
+ *     4  SET_UNIFORMS  {f32 x 4 per uniform; VS block then FS block}
+ *     5  DRAW          {ta_va lo, ta_va hi, ta_len, first}
+ *     6  BARRIER
+ *     7  SET_TEXTURE   {slot, w, h, gpu_va}
+ *     8  SET_VIEWPORT  {f32 scale[3], f32 translate[3]}
+ *     9  SET_SCISSOR   {enable, minx, miny, maxx, maxy}
+ *    10  SET_BLEND     {enable, rgb_func, rgb_src, rgb_dst,
+ *                       a_func, a_src, a_dst, colormask}
+ *    11  SET_DEPTH     {test_enable, write_enable, func}
+ *    12  SET_RASTER    {cull_face, front_ccw}
+ *   Opcodes 8-12 are forwarded so the executor can implement them; an
+ *   executor that does not know an opcode skips it.  Until it does, the
+ *   corresponding GL state has no effect (see README).
+ *
+ *   layer 2 (TA packet BO, parsed by the binner / ta_stage.py):
+ *     [u32 opcode][u32 words][payload...] with opcodes
+ *     1 VGT_STATE{mode} 2 INDEX_RANGE{first,count}
+ *     3 VERTEX_ARRAY{ncomp,reserved,stride,floats...inline} 4 END
+ *   One vertex = num_elements x vec4 floats; element i is the VS input
+ *   with Gallium input index i and is loaded to registers r[4i..4i+3].
  */
 #include "prismrv_context.h"
 
@@ -16,11 +52,18 @@
 
 #include "util/u_blitter.h"
 #include "util/u_memory.h"
+#include "util/u_transfer.h"
+#include "util/u_transfer_helper.h"
 #include "util/u_upload_mgr.h"
 #include "util/ralloc.h"
 #include "util/u_debug.h"
 #include "util/format/u_format.h"
+#include "util/u_math.h"
+#include "util/u_pack_color.h"
+#include "util/u_inlines.h"
+#include "util/format/u_format.h"
 #include "util/half_float.h"
+#include "compiler/nir/nir.h"
 
 #include "prismrv_batch.h"
 #include "prismrv_fence.h"
@@ -28,7 +71,54 @@
 #include "prismrv_resource.h"
 #include "prismrv_program.h"
 
-/* ---- flush ---------------------------------------------------------- */
+enum {
+   OP_NOP = 0, OP_SET_RT, OP_SET_PROG_VS, OP_SET_PROG_FS, OP_SET_UNIFORMS,
+   OP_DRAW, OP_BARRIER, OP_SET_TEXTURE, OP_SET_VIEWPORT, OP_SET_SCISSOR,
+   OP_SET_BLEND, OP_SET_DEPTH, OP_SET_RASTER,
+};
+
+/* vertices per DRAW packet; keeps one TA stream small and bounded */
+#define PRISMRV_MAX_CHUNK_VERTS 240
+
+/* ---- batch bookkeeping ----------------------------------------------- */
+
+/* wait for the previous job before the CPU rewrites the cmd/TA BOs */
+static bool
+prismrv_batch_wait_prev(struct prismrv_context *ctx)
+{
+   struct pollfd pfd;
+   int pr;
+   bool done;
+
+   if (ctx->batch.prev_fence_fd < 0)
+      return true;
+
+   pfd.fd = ctx->batch.prev_fence_fd;
+   pfd.events = POLLIN;
+   pfd.revents = 0;
+   pr = poll(&pfd, 1, 5000);
+   done = pr > 0 && (pfd.revents & (POLLIN | POLLERR | POLLHUP));
+   if (!done) {
+      debug_printf("prismrv: GPU wait failed (poll=%d revents=%x)\n", pr,
+                   pfd.revents);
+      return false;
+   }
+   close(ctx->batch.prev_fence_fd);
+   ctx->batch.prev_fence_fd = -1;
+   return true;
+}
+
+static void
+prismrv_batch_add_bo(struct prismrv_context *ctx, uint32_t handle)
+{
+   for (unsigned i = 0; i < ctx->batch.num_bos; i++)
+      if (ctx->batch.bos[i] == handle)
+         return;
+   if (ctx->batch.num_bos < PRISMRV_BATCH_MAX_BOS)
+      ctx->batch.bos[ctx->batch.num_bos++] = handle;
+}
+
+/* ---- flush ------------------------------------------------------------ */
 
 static void
 prismrv_context_flush(struct pipe_context *pctx,
@@ -38,23 +128,22 @@ prismrv_context_flush(struct pipe_context *pctx,
    int out_fd = -1;
 
    if (ctx->batch.cmd_size) {
-      uint32_t bos[1] = { ctx->batch.ta_handle };
       int ret = prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
-                           ctx->batch.cmd_handle, ctx->batch.cmd_size,
-                           ctx->batch.ta_handle ? bos : NULL,
-                           ctx->batch.ta_handle ? 1 : 0, &out_fd);
+                                     ctx->batch.cmd_handle,
+                                     ctx->batch.cmd_size,
+                                     ctx->batch.bos, ctx->batch.num_bos,
+                                     &out_fd);
       ctx->batch.cmd_size = 0;
       ctx->batch.ta_used_offset = 0;
+      ctx->batch.num_bos = 0;
+      ctx->dirty = PRISMRV_DIRTY_ALL;
 
       if (ret) {
-         debug_printf("prismrv: submit failed (%d) — context may be lost\n", ret);
+         debug_printf("prismrv: submit failed (%d) — context lost\n", ret);
          ctx->context_lost = true;
          out_fd = -1;
       } else if (out_fd >= 0) {
-         /*
-          * Keep a dup'd copy for batch_begin() to poll before writing
-          * the next frame into the same BO.
-          */
+         /* keep a dup'd copy for the next batch to wait on */
          int dup_fd = dup(out_fd);
          if (dup_fd < 0) {
             debug_printf("prismrv: dup(fence) failed — context lost\n");
@@ -68,9 +157,6 @@ prismrv_context_flush(struct pipe_context *pctx,
    }
 
    if (fence) {
-      /* Return the real fence to the caller for Gallium implicit sync.
-       * The internal prev_fence_fd is a dup'd copy; closing either does
-       * not affect the other. */
       *fence = (out_fd >= 0) ? prismrv_fence_create(out_fd) : NULL;
       if (out_fd >= 0 && !*fence)
          close(out_fd);
@@ -78,7 +164,6 @@ prismrv_context_flush(struct pipe_context *pctx,
       close(out_fd);
    }
 }
-
 
 static void
 prismrv_set_debug_callback(struct pipe_context *pctx,
@@ -92,70 +177,8 @@ prismrv_invalidate_resource(struct pipe_context *pctx,
 {
 }
 
-/* ---- draw ------------------------------------------------------------ */
+/* ---- vertex fetch (CPU gather into the TA stream) ------------------- */
 
-/* ---- command stream construction ------------------------------------- *
- * Two-layer format shared with the Python UMD (libprismrv.py):
- *
- *   layer 1 (cmd BO):  [u32 opcode][u32 words][payload...]
- *     0 NOP          -
- *     1 SET_RT       {w(u32), h(u32)}
- *     2 SET_PROG_VS  {usse text, NUL-padded}
- *     3 SET_PROG_FS  {usse text, NUL-padded}
- *     4 SET_UNIFORMS {f32 x 4 per uniform}
- *     5 DRAW         {ta_va(u64), ta_len(u32), first(u32)} — ta_va is the
- *                    GPU VA of a BO holding the layer-2 TA packets
- *     6 BARRIER      -
- *     7 SET_TEXTURE  {slot(u32), w(u32), h(u32), gem_handle(u32)}
- *
- *   layer 2 (TA packet BO, parsed by the binner / ta_stage.py):
- *     [u32 opcode][u32 words][payload...] with opcodes
- *     1 VGT_STATE{mode} 2 INDEX_RANGE{first,count}
- *     3 VERTEX_ARRAY{ncomp,reserved,stride,floats...inline} 4 END
- */
-
-static uint32_t
-prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
-                        const float *verts, unsigned nverts,
-                        unsigned ncomp, unsigned mode)
-{
-   uint32_t off = 0;
-   uint32_t nw = nverts * ncomp;
-
-   /* bounds: VGT(3) + INDEX_RANGE(4) + VERTEX_ARRAY hdr(5) + data + END(2) */
-   if (3 + 4 + 5 + nw + 2 > max_words)
-      return 0;
-
-   /* VGT_STATE: mode 0=points 1=lines 2=triangles (ta_stage.py) */
-   buf[off++] = 1; buf[off++] = 1; buf[off++] = mode;
-   /* INDEX_RANGE */
-   buf[off++] = 2; buf[off++] = 2; buf[off++] = 0; buf[off++] = nverts;
-   /* VERTEX_ARRAY: inline float data after the 3-word header */
-   buf[off++] = 3; buf[off++] = 3 + nw;
-   buf[off++] = ncomp; buf[off++] = 0; buf[off++] = ncomp;
-   memcpy(buf + off, verts, nw * 4); off += nw;
-   /* END */
-   buf[off++] = 4; buf[off++] = 0;
-
-   return off * 4;   /* byte length */
-}
-
-/*
- * Fetch one component from a raw vertex attribute byte stream and
- * return it as a float in the range expected by the shader.
- *
- * Supported formats are those the driver advertises via
- * get_shader_param(MAX_INPUTS) and used by real GL state trackers:
- *   - FLOAT32 (pass-through)
- *   - UNORM8  (0..255 → 0.0..1.0)
- *   - SNORM8  (-128..127 → -1.0..1.0)
- *   - UINT8   (0..255 → 0.0..255.0, cast)
- *   - UNORM16 / SNORM16
- *   - FLOAT16
- *
- * Unknown formats fall back to 0.0 so a draw call with an unsupported
- * attribute format produces black rather than random garbage.
- */
 static float
 prismrv_fetch_component(const uint8_t *src, enum pipe_format fmt,
                         unsigned comp)
@@ -229,6 +252,185 @@ prismrv_fetch_vertex_attrib(float out[4], const uint8_t *base,
       out[c] = prismrv_fetch_component(src, el->src_format, c);
 }
 
+
+static uint32_t
+prismrv_pack_ta_packets(uint32_t *buf, uint32_t max_words,
+                        const float *verts, unsigned nverts,
+                        unsigned ncomp, unsigned mode)
+{
+   uint32_t off = 0;
+   uint32_t nw = nverts * ncomp;
+
+   /* VGT(3) + INDEX_RANGE(4) + VERTEX_ARRAY hdr(5) + data + END(2) */
+   if (3 + 4 + 5 + nw + 2 > max_words)
+      return 0;
+
+   /* VGT_STATE: mode 0=points 1=lines 2=triangles (ta_stage.py) */
+   buf[off++] = 1; buf[off++] = 1; buf[off++] = mode;
+   buf[off++] = 2; buf[off++] = 2; buf[off++] = 0; buf[off++] = nverts;
+   buf[off++] = 3; buf[off++] = 3 + nw;
+   buf[off++] = ncomp; buf[off++] = 0; buf[off++] = ncomp;
+   memcpy(buf + off, verts, nw * 4); off += nw;
+   buf[off++] = 4; buf[off++] = 0;
+
+   return off * 4;   /* byte length */
+}
+
+/* words needed by the state block for the current dirty set */
+static size_t
+prismrv_state_words(const struct prismrv_context *ctx)
+{
+   size_t n = 2 + 5;                    /* SET_RT */
+   if (ctx->vs && ctx->vs->usse_text)
+      n += 2 + (ctx->vs->usse_len + 4) / 4;
+   if (ctx->fs && ctx->fs->usse_text)
+      n += 2 + (ctx->fs->usse_len + 4) / 4;
+   n += 2 + (ctx->num_vs_constants + ctx->num_fs_constants) * 4;
+   n += 8 * (2 + 4);                    /* textures */
+   n += (2 + 6) + (2 + 5) + (2 + 8) + (2 + 3) + (2 + 2);
+   return n;
+}
+
+static void
+prismrv_emit_program(uint32_t *out, unsigned *off, unsigned opcode,
+                     const struct prismrv_shader_state *s)
+{
+   unsigned words = (s->usse_len + 4) / 4;
+
+   out[(*off)++] = opcode;
+   out[(*off)++] = words;
+   out[*off + words - 1] = 0;           /* NUL padding */
+   memcpy(out + *off, s->usse_text, s->usse_len);
+   *off += words;
+}
+
+/* write all dirty state; returns words written */
+static unsigned
+prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
+{
+   const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
+   unsigned off = 0;
+
+   /* SET_RT: geometry plus the render target BO (written by the job) */
+   out[off++] = OP_SET_RT; out[off++] = 5;
+   out[off++] = fb->width; out[off++] = fb->height;
+   if (fb->nr_cbufs && fb->cbufs[0].texture) {
+      struct prismrv_resource *rt = to_prismrv_resource(fb->cbufs[0].texture);
+
+      out[off++] = rt->gpu_va;
+      out[off++] = rt->base.width0 * util_format_get_blocksize(rt->base.format);
+      out[off++] = rt->base.format;
+      prismrv_batch_add_bo(ctx, rt->gem_handle);
+   } else {
+      out[off++] = 0; out[off++] = 0; out[off++] = PIPE_FORMAT_NONE;
+   }
+
+   if (ctx->vs && ctx->vs->usse_text)
+      prismrv_emit_program(out, &off, OP_SET_PROG_VS, ctx->vs);
+   if (ctx->fs && ctx->fs->usse_text)
+      prismrv_emit_program(out, &off, OP_SET_PROG_FS, ctx->fs);
+
+   if (ctx->num_vs_constants || ctx->num_fs_constants) {
+      unsigned nv = ctx->num_vs_constants, nf = ctx->num_fs_constants;
+
+      out[off++] = OP_SET_UNIFORMS;
+      out[off++] = (nv + nf) * 4;
+      memcpy(out + off, ctx->vs_constants, nv * 16); off += nv * 4;
+      memcpy(out + off, ctx->fs_constants, nf * 16); off += nf * 4;
+   }
+
+   /* textures carry the BO's GPU VA (never the GEM handle) */
+   for (unsigned t = 0; t < 8; t++) {
+      struct prismrv_resource *tex = to_prismrv_resource(ctx->textures[t]);
+
+      if (!tex)
+         continue;
+      out[off++] = OP_SET_TEXTURE; out[off++] = 4;
+      out[off++] = t;
+      out[off++] = tex->base.width0;
+      out[off++] = tex->base.height0;
+      out[off++] = tex->gpu_va;
+      prismrv_batch_add_bo(ctx, tex->gem_handle);
+   }
+
+   {
+      float vp[6] = { 1.f, 1.f, 1.f, 0.f, 0.f, 0.f };
+      unsigned k;
+
+      if (ctx->viewport_valid) {
+         memcpy(vp, ctx->viewport.scale, 12);
+         memcpy(vp + 3, ctx->viewport.translate, 12);
+      } else {
+         vp[0] = fb->width * 0.5f;  vp[1] = fb->height * 0.5f;  vp[2] = 0.5f;
+         vp[3] = fb->width * 0.5f;  vp[4] = fb->height * 0.5f;  vp[5] = 0.5f;
+      }
+      out[off++] = OP_SET_VIEWPORT; out[off++] = 6;
+      for (k = 0; k < 6; k++)
+         memcpy(&out[off++], &vp[k], 4);
+   }
+
+   {
+      const struct pipe_scissor_state *sc = &ctx->scissors[0];
+      bool en = ctx->raster.scissor_enable;
+
+      out[off++] = OP_SET_SCISSOR; out[off++] = 5;
+      out[off++] = en;
+      out[off++] = en ? sc->minx : 0;
+      out[off++] = en ? sc->miny : 0;
+      out[off++] = en ? sc->maxx : fb->width;
+      out[off++] = en ? sc->maxy : fb->height;
+   }
+
+   out[off++] = OP_SET_BLEND; out[off++] = 8;
+   out[off++] = ctx->blend.blend_enable;
+   out[off++] = ctx->blend.rgb_func;
+   out[off++] = ctx->blend.rgb_src;
+   out[off++] = ctx->blend.rgb_dst;
+   out[off++] = ctx->blend.alpha_func;
+   out[off++] = ctx->blend.alpha_src;
+   out[off++] = ctx->blend.alpha_dst;
+   out[off++] = ctx->blend.colormask;
+
+   out[off++] = OP_SET_DEPTH; out[off++] = 3;
+   out[off++] = ctx->depth.depth_enabled;
+   out[off++] = ctx->depth.depth_writemask;
+   out[off++] = ctx->depth.depth_func;
+
+   out[off++] = OP_SET_RASTER; out[off++] = 2;
+   out[off++] = ctx->raster.cull_face;
+   out[off++] = ctx->raster.front_ccw;
+
+   ctx->dirty = 0;
+   return off;
+}
+
+/*
+ * Make room for @words command words and @ta_bytes of TA stream.  If the
+ * batch is full it is flushed and waited for, then retried once; only a
+ * request that cannot fit an empty batch fails.
+ */
+static bool
+prismrv_reserve(struct prismrv_context *ctx, size_t words, size_t ta_bytes)
+{
+   struct pipe_context *pctx = &ctx->base;
+   size_t cmd_bytes = words * 4;
+
+   if (cmd_bytes > ctx->batch.cmd_capacity ||
+       ta_bytes > ctx->batch.ta_capacity)
+      return false;
+
+   if (ctx->batch.cmd_size + cmd_bytes > ctx->batch.cmd_capacity ||
+       ctx->batch.ta_used_offset + ta_bytes > ctx->batch.ta_capacity) {
+      prismrv_context_flush(pctx, NULL, 0);
+      if (ctx->context_lost || !prismrv_batch_wait_prev(ctx))
+         return false;
+      /* the fresh batch must resend everything, so the caller has to
+       * recompute the words it needs: signalled by returning true with
+       * an empty batch (cmd_size == 0) */
+   }
+   return true;
+}
+
 static void
 prismrv_draw_vbo(struct pipe_context *pctx,
                  const struct pipe_draw_info *info,
@@ -239,325 +441,181 @@ prismrv_draw_vbo(struct pipe_context *pctx,
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    struct prismrv_screen *screen = ctx->screen;
-   unsigned nverts, ncomp = 7;
-   uint32_t ta_len;
-   float *verts = NULL;
+   unsigned mode, min_verts, quantum;
 
-   bool is_tri = info->mode == MESA_PRIM_TRIANGLES;
-   unsigned min_verts = is_tri ? 3 : (info->mode == MESA_PRIM_LINES ? 2 : 1);
-
-   if ((info->mode != MESA_PRIM_TRIANGLES && info->mode != MESA_PRIM_LINES &&
-        info->mode != MESA_PRIM_POINTS) || !ctx->num_vertex_elements)
-      return;
-
-   /* bail out after an unrecoverable submit error */
    if (ctx->context_lost)
       return;
 
-   /*
-    * prismrv_batch_begin(): wait for the previous GPU job before writing
-    * new commands into cmd_map.
-    *
-    * This must happen BEFORE any write to ctx->batch.cmd_map or
-    * ctx->batch.ta_map.  When cmd_size == 0 we are starting a new
-    * batch (either first draw or after a flush), which means the BO
-    * from the previous submit may still be in flight.
-    *
-    * prev_fence_fd is the fence from the last flush(); poll() blocks
-    * until that job completes, then we can safely overwrite the BO.
-    *
-    * Placing the wait here (not in flush()) is critical: flush() sets
-    * cmd_size=0 but the CPU starts writing N+1 commands immediately
-    * on the next draw — the wait must precede that write, not follow
-    * the previous submit.
-    */
-   if (ctx->batch.cmd_size == 0 && ctx->batch.prev_fence_fd >= 0) {
-      struct pollfd pfd = { .fd = ctx->batch.prev_fence_fd, .events = POLLIN };
-      int pr = poll(&pfd, 1, 5000);
-      bool gpu_done = (pr > 0) && (pfd.revents & (POLLIN | POLLERR | POLLHUP));
-
-      close(ctx->batch.prev_fence_fd);
-      ctx->batch.prev_fence_fd = -1;
-
-      if (!gpu_done) {
-         /*
-          * GPU did not finish in time.  Returning here prevents the
-          * CPU from overwriting the BO while the GPU is still reading
-          * it.  The caller (state tracker) will re-flush on the next
-          * frame; the batch remains empty so no corrupted draw is
-          * submitted.
-          */
-         debug_printf("prismrv: batch_begin GPU wait failed "
-                      "(poll=%d revents=%x) — skipping draw to avoid BO race\n",
-                      pr, pfd.revents);
-         return;
-      }
-   }
-
-   /* indexed draw: expand the index buffer into a vertex list first */
-   const uint32_t *indices = NULL;
-   unsigned index_size = 0;
-
-   if (info->index_size) {
-      if (info->has_user_indices)
-         indices = (const uint32_t *)info->index.user;
-      else if (info->index.resource)
-         indices = (const uint32_t *)prismrv_resource_map(info->index.resource);
-      if (!indices)
-         return;
-      index_size = info->index_size;
-   }
-
-   nverts = draws->count;
-   if (nverts < min_verts)
+   /* none of these are advertised in the caps; refuse loudly rather
+    * than render something different from what was asked */
+   if (indirect || info->primitive_restart || info->instance_count > 1 ||
+       info->start_instance) {
+      debug_printf("prismrv: unsupported draw (indirect/restart/instancing)\n");
       return;
-   if (nverts > 256)
-      nverts = 256;
-
-   /* vertex data: positions and colors gathered from the bound vertex
-    * buffer(s).  Element 0 feeds positions, element 1 (if bound) feeds
-    * colours; both must be float3/float4 in the first vertex buffer. */
-   {
-      struct prismrv_vertex_element *pos_el = &ctx->vertex_elements[0];
-      struct prismrv_vertex_element *col_el = ctx->num_vertex_elements > 1 ?
-                                              &ctx->vertex_elements[1] : NULL;
-      struct pipe_vertex_buffer *vb_pos =
-         &ctx->vertex_buffers[pos_el->vertex_buffer_index];
-      struct pipe_vertex_buffer *vb_col =
-         col_el ? &ctx->vertex_buffers[col_el->vertex_buffer_index] : NULL;
-      const uint8_t *base_pos = NULL, *base_col = NULL;
-
-      if (vb_pos && vb_pos->buffer.resource)
-         base_pos = prismrv_resource_map(vb_pos->buffer.resource)
-                    + vb_pos->buffer_offset;
-      if (vb_col && vb_col->buffer.resource)
-         base_col = prismrv_resource_map(vb_col->buffer.resource)
-                    + vb_col->buffer_offset;
-      if (!base_pos)
-         return;
-      if (col_el && !base_col)
-         return;
-
-      verts = calloc(nverts, ncomp * sizeof(float));
-      if (!verts)
-         return;
-
-      for (unsigned v = 0; v < nverts; v++) {
-         unsigned src = v;
-
-         if (index_size == 4)
-            src = indices[draws->start + v];
-         else if (index_size == 2)
-            src = ((const uint16_t *)indices)[draws->start + v];
-         else if (index_size == 1)
-            src = ((const uint8_t *)indices)[draws->start + v];
-
-         float pos[4], col[4] = { 0.f, 0.f, 0.f, 1.f };
-         prismrv_fetch_vertex_attrib(pos, base_pos, pos_el, src);
-         if (col_el && base_col)
-            prismrv_fetch_vertex_attrib(col, base_col, col_el, src);
-
-         verts[v * ncomp + 0] = pos[0];
-         verts[v * ncomp + 1] = pos[1];
-         verts[v * ncomp + 2] = pos[2];
-         verts[v * ncomp + 3] = col[0];
-         verts[v * ncomp + 4] = col[1];
-         verts[v * ncomp + 5] = col[2];
-         verts[v * ncomp + 6] = col[3];
-      }
    }
 
-   /* build the layer-2 TA packet stream into the TA BO */
-   /* TA BO: lazy allocation */
+   switch (info->mode) {
+   case MESA_PRIM_POINTS:    mode = 0; min_verts = 1; quantum = 1; break;
+   case MESA_PRIM_LINES:     mode = 1; min_verts = 2; quantum = 2; break;
+   case MESA_PRIM_TRIANGLES: mode = 2; min_verts = 3; quantum = 3; break;
+   default:
+      debug_printf("prismrv: unsupported primitive %d\n", info->mode);
+      return;
+   }
+
+   if (!ctx->num_vertex_elements || !ctx->vs || !ctx->vs->usse_text ||
+       !ctx->fs || !ctx->fs->usse_text)
+      return;   /* shader failed to compile, or nothing bound */
+
+   /* the TA BO is created lazily */
    if (!ctx->batch.ta_handle) {
-      ctx->batch.ta_capacity = 256 * 1024; /* 256 KB for multiple draws */
-      ctx->batch.ta_handle =
-         prismrv_drm_gem_create(screen->fd, ctx->batch.ta_capacity);
-      ctx->batch.ta_map =
+      ctx->batch.ta_capacity = 256 * 1024;
+      ctx->batch.ta_handle = prismrv_drm_gem_create(screen->fd,
+                                                    ctx->batch.ta_capacity,
+                                                    &ctx->batch.ta_gpu_va);
+      ctx->batch.ta_map = ctx->batch.ta_handle ?
          prismrv_drm_gem_map(screen->fd, ctx->batch.ta_handle,
-                             ctx->batch.ta_capacity);
+                             ctx->batch.ta_capacity) : NULL;
       ctx->batch.ta_used_offset = 0;
    }
    if (!ctx->batch.ta_map || ctx->batch.ta_map == MAP_FAILED) {
-      free(verts);
+      ctx->context_lost = true;
       return;
    }
 
-   /*
-    * Each draw appends its TA packet stream at ta_used_offset and
-    * advances the cursor.  This ensures that batch-internal draws
-    * reference distinct regions of the TA BO.
-    *
-    * The DRAW command encodes ta_used_offset so the executor knows
-    * which region belongs to this draw call.
-    */
-   {
-      unsigned mode = info->mode == MESA_PRIM_POINTS ? 0 :
-                      info->mode == MESA_PRIM_LINES ? 1 : 2;
-      uint32_t available =
-         (ctx->batch.ta_capacity - ctx->batch.ta_used_offset) / 4;
+   /* index buffer */
+   const void *indices = NULL;
+   unsigned index_size = info->index_size;
 
-      ta_len = prismrv_pack_ta_packets(
-         (uint32_t *)(ctx->batch.ta_map + ctx->batch.ta_used_offset),
-         available, verts, nverts, ncomp, mode);
-
-      if (!ta_len) {
-         /*
-          * TA BO full: flush the current batch so the GPU can consume
-          * the already-enqueued draws, then retry with a fresh cursor.
-          */
-         struct pipe_fence_handle *flush_fence = NULL;
-         free(verts);
-         prismrv_context_flush(pctx, &flush_fence, 0);
-         if (flush_fence) {
-            pctx->screen->fence_finish(pctx->screen, pctx, flush_fence,
-                                       UINT64_MAX);
-            pctx->screen->fence_reference(pctx->screen, &flush_fence, NULL);
-         }
-         /* cursor was reset by flush; re-enter draw_vbo */
-         debug_printf("prismrv: TA BO full — flushed, caller must retry\n");
+   if (index_size) {
+      indices = info->has_user_indices ? info->index.user :
+         (info->index.resource ?
+          prismrv_resource_map(info->index.resource) : NULL);
+      if (!indices || (index_size != 1 && index_size != 2 &&
+                       index_size != 4))
          return;
-      }
    }
-   free(verts);
 
-      /* layer-1 stream in the cmd BO: SET_RT + SET_PROG_* + DRAW */
-      {
-         uint32_t *out = (uint32_t *)((uint8_t *)ctx->batch.cmd_map +
-                                      ctx->batch.cmd_size);
-         const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
-         uint32_t off = 0;
-         unsigned prog_words;
+   /* per-element source pointers */
+   const uint8_t *base[PRISMRV_MAX_VERTEX_ELEMENTS];
+   unsigned nel = MIN2(ctx->num_vertex_elements, PRISMRV_MAX_VERTEX_ELEMENTS);
+   for (unsigned e = 0; e < nel; e++) {
+      unsigned vbi = ctx->vertex_elements[e].vertex_buffer_index;
+      const struct pipe_vertex_buffer *vb;
 
-         /* worst-case space check before writing: SET_RT + both shader
-          * programs + uniforms + 8 textures + DRAW + BARRIER */
-         {
-            size_t need = 4 * 4   /* SET_RT is opcode+words+w+h */
-               + (ctx->vs.usse_len ? 2 * 4 + ((ctx->vs.usse_len + 4) & ~3u) : 0)
-               + (ctx->fs.usse_len ? 2 * 4 + ((ctx->fs.usse_len + 4) & ~3u) : 0)
-               + ((ctx->num_vs_constants || ctx->num_fs_constants) ?
-                 2 * 4 + (ctx->num_vs_constants + ctx->num_fs_constants) * 16 : 0)
-               + 8 * 6 * 4
-               + 5 * 4 + 2 * 4;
-            if (ctx->batch.cmd_size + need > ctx->batch.cmd_capacity) {
-               if (need > ctx->batch.cmd_capacity) {
-                  /*
-                   * A single draw's command stream exceeds the entire
-                   * cmd BO capacity (e.g. a shader with > 64 KB of text).
-                   * We cannot flush-and-retry here because the next attempt
-                   * would hit the same limit.  Skip this draw and log.
-                   */
-                  debug_printf("prismrv: single draw exceeds cmd BO capacity "
-                               "(%u > %u) — draw dropped\n",
-                               need, ctx->batch.cmd_capacity);
-                  goto skip_draw;
-               }
-               /* flush what we have and start a fresh command buffer */
-               struct pipe_fence_handle *fence = NULL;
-               prismrv_context_flush(pctx, &fence, 0);
-               if (fence) {
-                  pctx->screen->fence_finish(pctx->screen, pctx, fence,
-                                             UINT64_MAX);
-                  pctx->screen->fence_reference(pctx->screen, &fence, NULL);
-               }
-               ctx->batch.cmd_size = 0;
-               out = (uint32_t *)ctx->batch.cmd_map;
+      if (vbi >= ARRAY_SIZE(ctx->vertex_buffers))
+         return;
+      vb = &ctx->vertex_buffers[vbi];
+      if (vb->is_user_buffer)
+         base[e] = ctx->user_vertex_buffers[vbi];
+      else if (vb->buffer.resource)
+         base[e] = prismrv_resource_map(vb->buffer.resource);
+      else
+         base[e] = NULL;
+      if (!base[e])
+         return;
+      base[e] += vb->buffer_offset;
+   }
+   /* one vertex = nel vec4; without a colour element the fixed-function
+    * path of the executor reads v[4..6], so pad to two elements */
+   unsigned nvec = MAX2(nel, 2u);
+   unsigned ncomp = nvec * 4;
+
+   if (!prismrv_batch_wait_prev(ctx) && ctx->batch.cmd_size == 0)
+      return;
+
+   for (unsigned d = 0; d < num_draws; d++) {
+      unsigned start = draws[d].start, count = draws[d].count;
+      int bias = index_size ? draws[d].index_bias : 0;
+
+      /* draw in whole primitives, at most PRISMRV_MAX_CHUNK_VERTS each */
+      count -= count % quantum;
+      for (unsigned done = 0; done < count;) {
+         unsigned n = MIN2(count - done, PRISMRV_MAX_CHUNK_VERTS);
+         float *verts;
+         uint32_t ta_len;
+
+         n -= n % quantum;
+         if (n < min_verts)
+            break;
+
+         verts = malloc((size_t)n * ncomp * sizeof(float));
+         if (!verts)
+            return;
+
+         for (unsigned v = 0; v < n; v++) {
+            unsigned idx = start + done + v;
+            long src = idx;
+
+            if (index_size == 4)
+               src = ((const uint32_t *)indices)[idx];
+            else if (index_size == 2)
+               src = ((const uint16_t *)indices)[idx];
+            else if (index_size == 1)
+               src = ((const uint8_t *)indices)[idx];
+            src += bias;
+            if (src < 0)
+               src = 0;
+
+            for (unsigned e = 0; e < nvec; e++) {
+               float *dst = verts + (size_t)v * ncomp + e * 4;
+
+               if (e < nel)
+                  prismrv_fetch_vertex_attrib(dst, base[e],
+                                              &ctx->vertex_elements[e], src);
+               else
+                  dst[0] = dst[1] = dst[2] = dst[3] = 1.0f;
             }
          }
 
-         /* SET_RT */
-         out[off++] = 1; out[off++] = 2;
-         out[off++] = fb->width; out[off++] = fb->height;
-
-         /* bound vertex shader as USSE text (SET_PROG_VS) */
-         if (ctx->vs.usse_text) {
-            prog_words = (ctx->vs.usse_len + 4) / 4;
-            out[off++] = 2; out[off++] = prog_words;
-            memcpy(out + off, ctx->vs.usse_text, ctx->vs.usse_len + 1);
-            memset((uint8_t *)out + off * 4 + ctx->vs.usse_len + 1,
-                   0, prog_words * 4 - ctx->vs.usse_len - 1);
-            off += prog_words;
+         /* make room; a flush inside resets the batch and the state */
+         size_t ta_need = ((size_t)(3 + 4 + 5 + 2) + n * ncomp) * 4;
+         size_t words = prismrv_state_words(ctx) + 2 + 4 + 2;
+         if (!prismrv_reserve(ctx, words, ta_need)) {
+            free(verts);
+            debug_printf("prismrv: draw does not fit an empty batch\n");
+            ctx->context_lost = true;
+            return;
          }
 
-         /* bound fragment shader as USSE text (SET_PROG_FS) */
-         if (ctx->fs.usse_text) {
-            prog_words = (ctx->fs.usse_len + 4) / 4;
-            out[off++] = 3; out[off++] = prog_words;
-            memcpy(out + off, ctx->fs.usse_text, ctx->fs.usse_len + 1);
-            memset((uint8_t *)out + off * 4 + ctx->fs.usse_len + 1,
-                   0, prog_words * 4 - ctx->fs.usse_len - 1);
-            off += prog_words;
+         ta_len = prismrv_pack_ta_packets(
+            (uint32_t *)(ctx->batch.ta_map + ctx->batch.ta_used_offset),
+            (ctx->batch.ta_capacity - ctx->batch.ta_used_offset) / 4,
+            verts, n, ncomp, mode);
+         free(verts);
+         if (!ta_len) {
+            ctx->context_lost = true;
+            return;
          }
 
-         /* uniforms: VS block first, then FS block (executor maps
-          * them to r16.. per stage) */
-         {
-            unsigned nv = ctx->num_vs_constants;
-            unsigned nf = ctx->num_fs_constants;
-            if (nv || nf) {
-               out[off++] = 4;
-               out[off++] = nv * 4 + nf * 4;
-               if (nv)
-                  memcpy(out + off, ctx->vs_constants, nv * 16);
-               off += nv * 4;
-               if (nf)
-                  memcpy(out + off, ctx->fs_constants, nf * 16);
-               off += nf * 4;
-            }
-         }
+         /* first packet of a job resets the BO list: TA BO first */
+         if (ctx->batch.num_bos == 0)
+            prismrv_batch_add_bo(ctx, ctx->batch.ta_handle);
 
-         /* bound textures: {slot(u32), w, h, gem_handle} per view.
-          * The executor maps the handle to pixels for `smp`. */
-         for (unsigned t = 0; t < 8; t++) {
-            struct prismrv_resource *tex =
-               to_prismrv_resource(ctx->textures[t]);
+         uint32_t *out = (uint32_t *)(ctx->batch.cmd_map + ctx->batch.cmd_size);
+         unsigned off = 0;
 
-            if (!tex || !tex->cpu_map)
-               continue;
-            out[off++] = 7; out[off++] = 4;
-            out[off++] = t;
-            out[off++] = tex->base.width0;
-            out[off++] = tex->base.height0;
-            out[off++] = tex->gem_handle;
-         }
+         if (ctx->dirty || ctx->batch.cmd_size == 0)
+            off += prismrv_emit_state(ctx, out);
 
-         /*
-          * DRAW: ta_va is the byte offset within the TA BO at which
-          * THIS draw's packet stream starts.  The kernel encodes the
-          * TA BO's base GPU VA in CCB data[2]; the executor adds
-          * ta_used_offset to get the per-draw address.
-          *
-          * Using a 32-bit offset (not a full 64-bit GPU VA) is safe
-          * because the TA BO is a single allocation < 4 GiB and the
-          * GPU VA space is 32-bit on SGX544.
-          *
-          * Payload layout (opcode 5):
-          *   words[0..1] = ta_byte_offset (u64 for ABI compat, hi=0)
-          *   words[2]    = ta_len in bytes
-          *   words[3]    = first vertex index
-          */
-         out[off++] = 5; out[off++] = sizeof(uint64_t)/4 + 2;
-         out[off++] = ctx->batch.ta_used_offset;  /* lo32 */
-         out[off++] = 0;                           /* hi32 always 0 */
+         uint64_t ta_va = (uint64_t)ctx->batch.ta_gpu_va +
+                          ctx->batch.ta_used_offset;
+         out[off++] = OP_DRAW; out[off++] = 4;
+         out[off++] = (uint32_t)ta_va;
+         out[off++] = (uint32_t)(ta_va >> 32);
          out[off++] = ta_len;
-         out[off++] = draws->start;
-         /* BARRIER */
-         out[off++] = 6; out[off++] = 0;
+         out[off++] = 0;
+         out[off++] = OP_BARRIER; out[off++] = 0;
 
          ctx->batch.cmd_size += off * 4;
-
-         /* Advance the TA cursor so the next draw in this batch writes
-          * to a different region of the TA BO. */
-         ctx->batch.ta_used_offset += ta_len;
-         /* Align to 4 bytes for the next draw's header */
-         ctx->batch.ta_used_offset = (ctx->batch.ta_used_offset + 3) & ~3u;
+         ctx->batch.ta_used_offset =
+            (ctx->batch.ta_used_offset + ta_len + 3) & ~3u;
+         done += n;
+      }
    }
-   return;
-
-skip_draw:
-   /* single-draw cmd overflow: free vertex data and return cleanly */
-   ;
 }
+
+/* ---- framebuffer / viewport / scissor ------------------------------- */
 
 static void
 prismrv_set_framebuffer_state(struct pipe_context *pctx,
@@ -565,29 +623,43 @@ prismrv_set_framebuffer_state(struct pipe_context *pctx,
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
+   /* the job in progress renders into the old target: submit it first */
+   if (ctx->batch.cmd_size)
+      prismrv_context_flush(pctx, NULL, 0);
    util_copy_framebuffer_state(&ctx->framebuffer, state);
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
 static void
 prismrv_set_viewport_states(struct pipe_context *pctx,
-                            unsigned start_slot,
-                            unsigned num_viewports,
+                            unsigned start_slot, unsigned num_viewports,
                             const struct pipe_viewport_state *states)
 {
-   (void)start_slot; (void)states;
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   /* max_viewports == 1: only slot 0 exists */
+   if (start_slot == 0 && num_viewports >= 1 && states) {
+      ctx->viewport = states[0];
+      ctx->viewport_valid = true;
+      ctx->dirty = PRISMRV_DIRTY_ALL;
+   }
 }
 
 static void
 prismrv_set_scissor_states(struct pipe_context *pctx,
-                           unsigned start_slot,
-                           unsigned num_scissors,
+                           unsigned start_slot, unsigned num_scissors,
                            const struct pipe_scissor_state *scissors)
 {
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   for (unsigned i = 0; i < num_scissors &&
+                        start_slot + i < PRISMRV_MAX_VIEWPORTS; i++)
+      ctx->scissors[start_slot + i] = scissors[i];
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
-/* ---- fixed-function state -------------------------------------------- */
+/* ---- fixed-function CSOs --------------------------------------------- */
 
-#define BLEND_FACTOR(f) ((uint32_t)(f) & 0xf)
 static void *
 prismrv_create_blend_state(struct pipe_context *pctx,
                            const struct pipe_blend_state *tmpl)
@@ -599,6 +671,10 @@ prismrv_create_blend_state(struct pipe_context *pctx,
    s->rgb_func = tmpl->rt[0].rgb_func;
    s->rgb_src = tmpl->rt[0].rgb_src_factor;
    s->rgb_dst = tmpl->rt[0].rgb_dst_factor;
+   s->alpha_func = tmpl->rt[0].alpha_func;
+   s->alpha_src = tmpl->rt[0].alpha_src_factor;
+   s->alpha_dst = tmpl->rt[0].alpha_dst_factor;
+   s->colormask = tmpl->rt[0].colormask;
    return s;
 }
 
@@ -609,12 +685,9 @@ prismrv_bind_blend_state(struct pipe_context *pctx, void *state)
 
    if (state)
       memcpy(&ctx->blend, state, sizeof(ctx->blend));
-}
-
-static void
-prismrv_delete_blend_state(struct pipe_context *pctx, void *state)
-{
-   FREE(state);
+   else
+      memset(&ctx->blend, 0, sizeof(ctx->blend));
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
 static void *
@@ -638,12 +711,9 @@ prismrv_bind_rasterizer_state(struct pipe_context *pctx, void *state)
 
    if (state)
       memcpy(&ctx->raster, state, sizeof(ctx->raster));
-}
-
-static void
-prismrv_delete_rasterizer_state(struct pipe_context *pctx, void *state)
-{
-   FREE(state);
+   else
+      memset(&ctx->raster, 0, sizeof(ctx->raster));
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
 static void *
@@ -668,13 +738,19 @@ prismrv_bind_depth_stencil_alpha_state(struct pipe_context *pctx, void *state)
 
    if (state)
       memcpy(&ctx->depth, state, sizeof(ctx->depth));
+   else
+      memset(&ctx->depth, 0, sizeof(ctx->depth));
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
+/* generic delete for the plain-old-data CSOs above */
 static void
-prismrv_delete_depth_stencil_alpha_state(struct pipe_context *pctx, void *state)
+prismrv_delete_cso(struct pipe_context *pctx, void *state)
 {
    FREE(state);
 }
+
+/* ---- constants ------------------------------------------------------- */
 
 static void
 prismrv_set_constant_buffer(struct pipe_context *pctx,
@@ -682,35 +758,46 @@ prismrv_set_constant_buffer(struct pipe_context *pctx,
                             const struct pipe_constant_buffer *cb)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
+   float *slot;
+   unsigned *count;
+   const uint8_t *data = NULL;
+   unsigned nvec4;
 
-   /* one uniform slot per shader stage; both ship in SET_UNIFORMS
-    * (VS block first, then FS block) with a word count covering both */
-   if (index != 0 || !cb || !cb->buffer)
+   if (index != 0 || (shader != MESA_SHADER_VERTEX &&
+                      shader != MESA_SHADER_FRAGMENT))
       return;
 
-   {
-      float *slot = (shader == MESA_SHADER_VERTEX) ?
-                    ctx->vs_constants : ctx->fs_constants;
-      unsigned *count = (shader == MESA_SHADER_VERTEX) ?
-                        &ctx->num_vs_constants : &ctx->num_fs_constants;
-      const float *data = prismrv_resource_map(cb->buffer);
-      unsigned nvec4 = cb->buffer_size / 16;
+   slot = shader == MESA_SHADER_VERTEX ? ctx->vs_constants : ctx->fs_constants;
+   count = shader == MESA_SHADER_VERTEX ? &ctx->num_vs_constants :
+                                          &ctx->num_fs_constants;
 
-      if (!data)
-         return;
-      if (nvec4 > ARRAY_SIZE(ctx->vs_constants) / 4)
-         nvec4 = ARRAY_SIZE(ctx->vs_constants) / 4;
-      memcpy(slot, data + cb->buffer_offset / 4, nvec4 * 16);
-      *count = nvec4;
+   if (cb) {
+      if (cb->user_buffer)
+         data = cb->user_buffer;
+      else if (cb->buffer)
+         data = prismrv_resource_map(cb->buffer);
    }
+   if (!data) {
+      *count = 0;
+      ctx->dirty = PRISMRV_DIRTY_ALL;
+      return;
+   }
+   data += cb->buffer_offset;
+
+   /* the backend can address only PRISMRV_MAX_UNIFORM_VEC4 vec4 */
+   nvec4 = MIN2(cb->buffer_size / 16, (unsigned)PRISMRV_MAX_UNIFORM_VEC4);
+   memcpy(slot, data, nvec4 * 16);
+   *count = nvec4;
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
+
+/* ---- samplers -------------------------------------------------------- */
 
 static void
 prismrv_sampler_view_destroy(struct pipe_context *pctx,
                              struct pipe_sampler_view *view)
 {
-   if (view->texture)
-      pipe_resource_reference(&view->texture, NULL);
+   pipe_resource_reference(&view->texture, NULL);
    FREE(view);
 }
 
@@ -726,7 +813,7 @@ prismrv_create_sampler_view(struct pipe_context *pctx,
    so->base = *tmpl;
    so->base.texture = NULL;
    pipe_resource_reference(&so->base.texture, pres);
-   so->base.reference.count = 1;
+   pipe_reference_init(&so->base.reference, 1);
    so->base.context = pctx;
    return &so->base;
 }
@@ -737,21 +824,15 @@ prismrv_bind_sampler_states(struct pipe_context *pctx,
                             unsigned start_slot, unsigned num_samplers,
                             void **samplers)
 {
-   /* sampler objects (filters/wrap) have no emulator equivalent:
-    * smp is nearest+clamp only.  Accepted and ignored. */
+   /* filter/wrap state has no executor equivalent (smp is nearest and
+    * clamped); sampler CSOs are accepted and ignored */
 }
 
 static void *
 prismrv_create_sampler_state(struct pipe_context *pctx,
                              const struct pipe_sampler_state *tmpl)
 {
-   return CALLOC_STRUCT(prismrv_blend_state); /* opaque cookie */
-}
-
-static void
-prismrv_delete_sampler_state(struct pipe_context *pctx, void *state)
-{
-   FREE(state);
+   return CALLOC(1, sizeof(int));   /* opaque non-NULL cookie */
 }
 
 static void
@@ -763,91 +844,269 @@ prismrv_set_sampler_views(struct pipe_context *pctx,
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
-   for (unsigned i = 0; i < num_views && start_slot + i < 8; i++) {
-      struct prismrv_sampler_view *sv =
-         views ? (struct prismrv_sampler_view *)views[i] : NULL;
+   /*
+    * Textures are only supported in the fragment stage (the VS caps
+    * advertise zero samplers); views for other stages are released.
+    * A single shared array with per-stage semantics used to let a VS
+    * binding overwrite the FS one.
+    */
+   for (unsigned i = 0; i < num_views; i++) {
+      struct pipe_sampler_view *sv = views ? views[i] : NULL;
       unsigned slot = start_slot + i;
 
-      if (!sv || !sv->base.texture) {
-         pipe_resource_reference(&ctx->textures[slot], NULL);
+      if (shader != MESA_SHADER_FRAGMENT || slot >= ARRAY_SIZE(ctx->textures))
          continue;
-      }
-      /* grab a reference so the resource cannot be destroyed while
-       * it is bound to the context's texture array */
-      pipe_resource_reference(&ctx->textures[slot], sv->base.texture);
-      /* nearest sampling needs the CPU mapping of the texture BO */
-      if (!to_prismrv_resource(ctx->textures[slot])->cpu_map)
-         prismrv_resource_map(ctx->textures[slot]);
+      pipe_resource_reference(&ctx->textures[slot],
+                              sv ? sv->texture : NULL);
    }
 
-   /* Release stale trailing slots */
-   unsigned trail_start = start_slot + num_views;
-   for (unsigned i = 0; i < unbind_num_trailing_slots &&
-                        trail_start + i < 8; i++)
-      pipe_resource_reference(&ctx->textures[trail_start + i], NULL);
+   if (shader == MESA_SHADER_FRAGMENT) {
+      for (unsigned i = 0; i < unbind_num_trailing_slots; i++) {
+         unsigned slot = start_slot + num_views + i;
+
+         if (slot < ARRAY_SIZE(ctx->textures))
+            pipe_resource_reference(&ctx->textures[slot], NULL);
+      }
+   }
+   ctx->dirty = PRISMRV_DIRTY_ALL;
+}
+
+/* ---- shaders --------------------------------------------------------- */
+
+static struct prismrv_shader_state *
+prismrv_create_shader_state(const struct pipe_shader_state *tmpl)
+{
+   struct prismrv_shader_state *state = CALLOC_STRUCT(prismrv_shader_state);
+   nir_shader *nir;
+
+   if (!state)
+      return NULL;
+
+   if (tmpl->type != PIPE_SHADER_IR_NIR || !tmpl->ir.nir) {
+      debug_printf("prismrv: only NIR shaders are supported\n");
+      return state;
+   }
+   /* the driver owns the NIR passed to create_*_state */
+   nir = tmpl->ir.nir;
+   state->usse_text = prismrv_nir_to_usse(NULL, nir);
+   if (state->usse_text)
+      state->usse_len = strlen(state->usse_text);
+   ralloc_free(nir);
+   return state;
+}
+
+static void
+prismrv_delete_shader_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_shader_state *s = state;
+
+   if (s && s->usse_text)
+      ralloc_free(s->usse_text);
+   FREE(s);
+}
+
+static void *
+prismrv_create_vs_state(struct pipe_context *pctx,
+                        const struct pipe_shader_state *tmpl)
+{
+   return prismrv_create_shader_state(tmpl);
+}
+
+static void
+prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   ctx->vs = state;
+   ctx->dirty = PRISMRV_DIRTY_ALL;
+}
+
+static void *
+prismrv_create_fs_state(struct pipe_context *pctx,
+                        const struct pipe_shader_state *tmpl)
+{
+   return prismrv_create_shader_state(tmpl);
+}
+
+static void
+prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   ctx->fs = state;
+   ctx->dirty = PRISMRV_DIRTY_ALL;
+}
+
+/* ---- vertex buffers / elements --------------------------------------- */
+
+static void
+prismrv_set_vertex_buffers(struct pipe_context *pctx,
+                           unsigned count,
+                           const struct pipe_vertex_buffer *buffers)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+   unsigned i;
+
+   for (i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
+      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
+      ctx->vertex_buffers[i].is_user_buffer = false;
+      ctx->vertex_buffers[i].buffer_offset = 0;
+      ctx->user_vertex_buffers[i] = NULL;
+   }
+   ctx->num_vertex_buffers = 0;
+
+   if (!buffers || !count)
+      return;
+
+   for (i = 0; i < count && i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
+      ctx->vertex_buffers[i].buffer_offset = buffers[i].buffer_offset;
+      ctx->vertex_buffers[i].is_user_buffer = buffers[i].is_user_buffer;
+      if (buffers[i].is_user_buffer) {
+         ctx->user_vertex_buffers[i] = buffers[i].buffer.user;
+      } else if (buffers[i].buffer.resource) {
+         pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource,
+                                 buffers[i].buffer.resource);
+      } else {
+         continue;
+      }
+      ctx->num_vertex_buffers = i + 1;
+   }
+}
+
+static void *
+prismrv_create_vertex_elements(struct pipe_context *pctx,
+                               unsigned num_elems,
+                               const struct pipe_vertex_element *elems)
+{
+   struct prismrv_vertex_element_state *cso;
+
+   /* VS inputs live in r0..r15: more elements cannot be delivered */
+   if (num_elems > PRISMRV_MAX_VERTEX_ELEMENTS) {
+      debug_printf("prismrv: %u vertex elements (max %u)\n", num_elems,
+                   PRISMRV_MAX_VERTEX_ELEMENTS);
+      return NULL;
+   }
+   cso = CALLOC_STRUCT(prismrv_vertex_element_state);
+   if (!cso)
+      return NULL;
+   cso->num_elements = num_elems;
+   for (unsigned i = 0; i < num_elems; i++) {
+      cso->elements[i].src_offset = elems[i].src_offset;
+      cso->elements[i].src_format = elems[i].src_format;
+      cso->elements[i].vertex_buffer_index = elems[i].vertex_buffer_index;
+      cso->elements[i].src_stride = elems[i].src_stride;
+   }
+   return cso;
+}
+
+static void
+prismrv_bind_vertex_elements(struct pipe_context *pctx, void *state)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+   struct prismrv_vertex_element_state *cso = state;
+
+   if (cso) {
+      ctx->num_vertex_elements = cso->num_elements;
+      memcpy(ctx->vertex_elements, cso->elements,
+             cso->num_elements * sizeof(ctx->vertex_elements[0]));
+   } else {
+      ctx->num_vertex_elements = 0;
+   }
+}
+
+/* ---- clears ------------------------------------------------------------ */
+
+/*
+ * CPU clear of a colour buffer.  The executor has no clear packet, so the
+ * pending job is submitted and waited for (write-after-GPU ordering) and
+ * the pixels are written through the BO mapping.
+ */
+static void
+prismrv_clear_color_rect(struct prismrv_context *ctx,
+                         struct pipe_resource *pres,
+                         const union pipe_color_union *color,
+                         int x, int y, unsigned w, unsigned h)
+{
+   struct prismrv_resource *res = to_prismrv_resource(pres);
+   unsigned bpp = util_format_get_blocksize(pres->format);
+   union util_color uc;
+   uint8_t *map;
+
+   if (!res || pres->target != PIPE_TEXTURE_2D || bpp == 0 || bpp > 4)
+      return;
+   if (x < 0) { w += x; x = 0; }
+   if (y < 0) { h += y; y = 0; }
+   if ((unsigned)x >= pres->width0 || (unsigned)y >= pres->height0)
+      return;
+   w = MIN2(w, pres->width0 - x);
+   h = MIN2(h, pres->height0 - y);
+
+   if (ctx->batch.cmd_size)
+      prismrv_context_flush(&ctx->base, NULL, 0);
+   if (!prismrv_batch_wait_prev(ctx))
+      return;
+   map = prismrv_resource_map(pres);
+   if (!map)
+      return;
+
+   util_pack_color_union(pres->format, &uc, color);
+   for (unsigned row = 0; row < h; row++) {
+      uint8_t *p = map + ((size_t)(y + row) * pres->width0 + x) * bpp;
+
+      for (unsigned col = 0; col < w; col++, p += bpp)
+         memcpy(p, &uc, bpp);
+   }
+}
+
+static void
+prismrv_clear(struct pipe_context *pctx, unsigned buffers,
+              uint32_t color_clear_mask, uint8_t stencil_clear_mask,
+              const struct pipe_scissor_state *scissor_state,
+              const union pipe_color_union *color, double depth,
+              unsigned stencil)
+{
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+   const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
+
+   if (buffers & PIPE_CLEAR_DEPTHSTENCIL)
+      debug_printf("prismrv: depth/stencil clear ignored (no Z buffer)\n");
+   if (!(buffers & PIPE_CLEAR_COLOR0) || !fb->nr_cbufs ||
+       !fb->cbufs[0].texture)
+      return;
+
+   if (scissor_state)
+      prismrv_clear_color_rect(ctx, fb->cbufs[0].texture, color,
+                               scissor_state->minx, scissor_state->miny,
+                               scissor_state->maxx - scissor_state->minx,
+                               scissor_state->maxy - scissor_state->miny);
+   else
+      prismrv_clear_color_rect(ctx, fb->cbufs[0].texture, color, 0, 0,
+                               fb->width, fb->height);
 }
 
 /* ---- lifecycle ------------------------------------------------------- */
-
-struct pipe_context *
-prismrv_context_create(struct pipe_screen *pscreen, void *priv,
-                       unsigned flags)
-{
-   struct prismrv_screen *screen = to_prismrv_screen(pscreen);
-   struct prismrv_context *ctx;
-
-   ctx = rzalloc(NULL, struct prismrv_context);
-   if (!ctx)
-      return NULL;
-
-   ctx->screen = screen;
-   ctx->base.screen = pscreen;
-   ctx->base.priv = priv;
-
-   prismrv_context_init(ctx);
-
-   /* command buffer for the layer-1 stream (SET_RT/DRAW/BARRIER) */
-   prismrv_batch_init_context(ctx);
-   if (!ctx->batch.cmd_handle || !ctx->batch.cmd_map ||
-       ctx->batch.cmd_map == MAP_FAILED) {
-      debug_printf("prismrv: failed to allocate the command buffer\n");
-      ctx->base.destroy(&ctx->base);
-      return NULL;
-   }
-
-   return &ctx->base;
-}
 
 static void
 prismrv_context_destroy(struct pipe_context *pctx)
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
 
-   /* Release owned USSE text copies */
-   if (ctx->vs_usse_owned) {
-      ralloc_free(ctx->vs_usse_owned);
-      ctx->vs_usse_owned = NULL;
-   }
-   if (ctx->fs_usse_owned) {
-      ralloc_free(ctx->fs_usse_owned);
-      ctx->fs_usse_owned = NULL;
-   }
+   /* Let the GPU finish with the BOs before they go away */
+   if (ctx->batch.cmd_size)
+      prismrv_context_flush(pctx, NULL, 0);
+   prismrv_batch_wait_prev(ctx);
 
-   /* Release sampler texture references */
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->textures); i++)
       pipe_resource_reference(&ctx->textures[i], NULL);
-
-   /* Release vertex buffer references */
    for (unsigned i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++)
       pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
+   util_unreference_framebuffer_state(&ctx->framebuffer);
 
-   /* Close the batch reuse fence if it was never consumed by batch_begin */
    if (ctx->batch.prev_fence_fd >= 0) {
       close(ctx->batch.prev_fence_fd);
       ctx->batch.prev_fence_fd = -1;
    }
 
-   /* blitter/uploader can be NULL when context creation failed early */
    if (ctx->blitter)
       util_blitter_destroy(ctx->blitter);
    if (ctx->uploader)
@@ -866,196 +1125,6 @@ prismrv_context_destroy(struct pipe_context *pctx)
    ralloc_free(ctx);
 }
 
-static void *
-prismrv_create_vs_state(struct pipe_context *pctx,
-                        const struct pipe_shader_state *tmpl)
-{
-   /* NIR is provided by st/mesa; store it for later USSE compilation */
-   struct prismrv_shader_state *state = CALLOC_STRUCT(prismrv_shader_state);
-   if (!state) return NULL;
-   state->nir = tmpl->ir.nir;
-   return state;
-}
-
-static void
-prismrv_bind_vs_state(struct pipe_context *pctx, void *state)
-{
-   struct prismrv_context *ctx = to_prismrv_context(pctx);
-   struct prismrv_shader_state *s = state;
-
-   /* compile NIR → USSE first so the copy below carries the text
-    * (the old order left ctx->vs.usse_text NULL until the next bind,
-    * making the first draw run with the previous shader) */
-   if (s && s->nir && !s->usse_text) {
-      /*
-       * Pass NULL so the USSE string is heap-rooted via ralloc.
-       * 's' is CALLOC'd (not ralloc'd) and must not be used as a
-       * ralloc parent.
-       */
-      s->usse_text =
-         prismrv_nir_to_usse(NULL, (nir_shader *)s->nir);
-      if (!s->usse_text) {
-         /* compilation failed: bind nothing so draw_vbo skips
-          * rather than shipping a stale or partial program */
-         memset(&ctx->vs, 0, sizeof(ctx->vs));
-         return;
-      }
-      s->usse_len = strlen(s->usse_text);
-   }
-
-   memcpy(&ctx->vs, state, sizeof(ctx->vs));
-   /*
-    * ctx->vs.usse_text now points into the shader state object.  If the
-    * state is deleted while this context still holds it as the current
-    * VS, ralloc_free(s->usse_text) in delete_vs_state would leave
-    * ctx->vs.usse_text dangling.  Duplicate the text so ctx->vs owns
-    * its copy independently of the shader state lifetime.
-    */
-   if (ctx->vs.usse_text) {
-      char *owned = ralloc_strdup(NULL, ctx->vs.usse_text);
-      /* free any previously owned copy */
-      if (ctx->vs_usse_owned)
-         ralloc_free(ctx->vs_usse_owned);
-      ctx->vs_usse_owned = owned;
-      ctx->vs.usse_text  = owned;
-   } else {
-      if (ctx->vs_usse_owned) {
-         ralloc_free(ctx->vs_usse_owned);
-         ctx->vs_usse_owned = NULL;
-      }
-   }
-}
-
-static void
-prismrv_delete_vs_state(struct pipe_context *pctx, void *state)
-{
-   struct prismrv_shader_state *s = state;
-   /* usse_text is ralloc_strdup(NULL, ...) — free via ralloc */
-   if (s && s->usse_text)
-      ralloc_free(s->usse_text);
-   FREE(s);
-}
-
-static void *
-prismrv_create_fs_state(struct pipe_context *pctx,
-                        const struct pipe_shader_state *tmpl)
-{
-   struct prismrv_shader_state *state = CALLOC_STRUCT(prismrv_shader_state);
-   if (!state) return NULL;
-   state->nir = tmpl->ir.nir;
-   return state;
-}
-
-static void
-prismrv_bind_fs_state(struct pipe_context *pctx, void *state)
-{
-   struct prismrv_context *ctx = to_prismrv_context(pctx);
-   struct prismrv_shader_state *s = state;
-
-   if (s && s->nir && !s->usse_text) {
-      s->usse_text =
-         prismrv_nir_to_usse(NULL, (nir_shader *)s->nir);
-      if (!s->usse_text) {
-         memset(&ctx->fs, 0, sizeof(ctx->fs));
-         return;
-      }
-      s->usse_len = strlen(s->usse_text);
-   }
-
-   memcpy(&ctx->fs, state, sizeof(ctx->fs));
-   if (ctx->fs.usse_text) {
-      char *owned = ralloc_strdup(NULL, ctx->fs.usse_text);
-      if (ctx->fs_usse_owned)
-         ralloc_free(ctx->fs_usse_owned);
-      ctx->fs_usse_owned = owned;
-      ctx->fs.usse_text  = owned;
-   } else {
-      if (ctx->fs_usse_owned) {
-         ralloc_free(ctx->fs_usse_owned);
-         ctx->fs_usse_owned = NULL;
-      }
-   }
-}
-
-static void
-prismrv_delete_fs_state(struct pipe_context *pctx, void *state)
-{
-   struct prismrv_shader_state *s = state;
-   if (s && s->usse_text)
-      ralloc_free(s->usse_text);
-   FREE(s);
-}
-
-static void
-prismrv_set_vertex_buffers(struct pipe_context *pctx,
-                           unsigned count,
-                           const struct pipe_vertex_buffer *buffers)
-{
-   struct prismrv_context *ctx = to_prismrv_context(pctx);
-   unsigned i;
-
-   /* Release all current vertex buffer references first */
-   for (i = 0; i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
-      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource, NULL);
-      ctx->vertex_buffers[i].is_user_buffer = false;
-      ctx->vertex_buffers[i].buffer_offset  = 0;
-   }
-   ctx->num_vertex_buffers = 0;
-
-   if (!buffers || !count)
-      return;
-
-   for (i = 0; i < count && i < ARRAY_SIZE(ctx->vertex_buffers); i++) {
-      if (!buffers[i].buffer.resource)
-         continue;
-      /* Acquire a reference so the resource stays alive while bound */
-      pipe_resource_reference(&ctx->vertex_buffers[i].buffer.resource,
-                              buffers[i].buffer.resource);
-      ctx->vertex_buffers[i].buffer_offset  = buffers[i].buffer_offset;
-      ctx->vertex_buffers[i].is_user_buffer = buffers[i].is_user_buffer;
-      ctx->num_vertex_buffers = i + 1;
-   }
-}
-
-static void *
-prismrv_create_vertex_elements(struct pipe_context *pctx,
-                               unsigned num_elems,
-                               const struct pipe_vertex_element *elems)
-{
-   struct prismrv_vertex_element_state *cso =
-      CALLOC_STRUCT(prismrv_vertex_element_state);
-   if (!cso)
-      return NULL;
-   cso->num_elements = MIN2(num_elems, 8u);
-   for (unsigned i = 0; i < cso->num_elements; i++) {
-      cso->elements[i].src_offset          = elems[i].src_offset;
-      cso->elements[i].src_format          = elems[i].src_format;
-      cso->elements[i].vertex_buffer_index = elems[i].vertex_buffer_index;
-      cso->elements[i].src_stride          = elems[i].src_stride;
-   }
-   return cso;
-}
-
-static void
-prismrv_bind_vertex_elements(struct pipe_context *pctx, void *state)
-{
-   struct prismrv_context *ctx = to_prismrv_context(pctx);
-   struct prismrv_vertex_element_state *cso = state;
-   if (cso) {
-      ctx->num_vertex_elements = cso->num_elements;
-      memcpy(ctx->vertex_elements, cso->elements,
-             cso->num_elements * sizeof(ctx->vertex_elements[0]));
-   } else {
-      ctx->num_vertex_elements = 0;
-   }
-}
-
-static void
-prismrv_delete_vertex_elements(struct pipe_context *pctx, void *state)
-{
-   FREE(state);
-}
-
 void
 prismrv_context_init(struct prismrv_context *ctx)
 {
@@ -1072,32 +1141,46 @@ prismrv_context_init(struct prismrv_context *ctx)
    pctx->set_constant_buffer = prismrv_set_constant_buffer;
    pctx->create_sampler_view = prismrv_create_sampler_view;
    pctx->sampler_view_destroy = prismrv_sampler_view_destroy;
+   pctx->sampler_view_release = u_default_sampler_view_release;
    pctx->create_vs_state = prismrv_create_vs_state;
    pctx->bind_vs_state = prismrv_bind_vs_state;
-   pctx->delete_vs_state = prismrv_delete_vs_state;
+   pctx->delete_vs_state = prismrv_delete_shader_state;
    pctx->create_fs_state = prismrv_create_fs_state;
    pctx->bind_fs_state = prismrv_bind_fs_state;
-   pctx->delete_fs_state = prismrv_delete_fs_state;
+   pctx->delete_fs_state = prismrv_delete_shader_state;
    pctx->set_vertex_buffers = prismrv_set_vertex_buffers;
    pctx->create_vertex_elements_state = prismrv_create_vertex_elements;
    pctx->bind_vertex_elements_state = prismrv_bind_vertex_elements;
-   pctx->delete_vertex_elements_state = prismrv_delete_vertex_elements;
+   pctx->delete_vertex_elements_state = prismrv_delete_cso;
    pctx->create_blend_state = prismrv_create_blend_state;
    pctx->bind_blend_state = prismrv_bind_blend_state;
-   pctx->delete_blend_state = prismrv_delete_blend_state;
+   pctx->delete_blend_state = prismrv_delete_cso;
    pctx->create_rasterizer_state = prismrv_create_rasterizer_state;
    pctx->bind_rasterizer_state = prismrv_bind_rasterizer_state;
-   pctx->delete_rasterizer_state = prismrv_delete_rasterizer_state;
+   pctx->delete_rasterizer_state = prismrv_delete_cso;
    pctx->create_depth_stencil_alpha_state =
       prismrv_create_depth_stencil_alpha_state;
    pctx->bind_depth_stencil_alpha_state =
       prismrv_bind_depth_stencil_alpha_state;
-   pctx->delete_depth_stencil_alpha_state =
-      prismrv_delete_depth_stencil_alpha_state;
+   pctx->delete_depth_stencil_alpha_state = prismrv_delete_cso;
    pctx->create_sampler_state = prismrv_create_sampler_state;
    pctx->bind_sampler_states = prismrv_bind_sampler_states;
-   pctx->delete_sampler_state = prismrv_delete_sampler_state;
+   pctx->delete_sampler_state = prismrv_delete_cso;
    pctx->set_sampler_views = prismrv_set_sampler_views;
+
+   /* resource access: transfers go through the screen's transfer helper */
+   pctx->buffer_map = u_transfer_helper_transfer_map;
+   pctx->texture_map = u_transfer_helper_transfer_map;
+   pctx->buffer_unmap = u_transfer_helper_transfer_unmap;
+   pctx->texture_unmap = u_transfer_helper_transfer_unmap;
+   pctx->transfer_flush_region = u_transfer_helper_transfer_flush_region;
+   pctx->buffer_subdata = u_default_buffer_subdata;
+   pctx->texture_subdata = u_default_texture_subdata;
+   pctx->clear_buffer = u_default_clear_buffer;
+   pctx->clear = prismrv_clear;
+
+   ctx->dirty = PRISMRV_DIRTY_ALL;
+   ctx->batch.prev_fence_fd = -1;
 
    ctx->uploader = u_upload_create_default(pctx);
    if (!ctx->uploader)
@@ -1107,4 +1190,32 @@ prismrv_context_init(struct prismrv_context *ctx)
 
    prismrv_fence_context_init(ctx);
    ctx->blitter = util_blitter_create(pctx);
+}
+
+struct pipe_context *
+prismrv_context_create(struct pipe_screen *pscreen, void *priv,
+                       unsigned flags)
+{
+   struct prismrv_screen *screen = to_prismrv_screen(pscreen);
+   struct prismrv_context *ctx;
+
+   ctx = rzalloc(NULL, struct prismrv_context);
+   if (!ctx)
+      return NULL;
+
+   ctx->screen = screen;
+   ctx->base.screen = pscreen;
+   ctx->base.priv = priv;
+
+   prismrv_context_init(ctx);
+
+   prismrv_batch_init_context(ctx);
+   if (!ctx->batch.cmd_handle || !ctx->batch.cmd_map ||
+       ctx->batch.cmd_map == MAP_FAILED || !ctx->uploader) {
+      debug_printf("prismrv: failed to create the context\n");
+      ctx->base.destroy(&ctx->base);
+      return NULL;
+   }
+
+   return &ctx->base;
 }

@@ -10,6 +10,8 @@
 struct blitter_context;
 struct u_upload_mgr;
 
+#define PRISMRV_BATCH_MAX_BOS 16
+
 struct prismrv_batch {
    uint32_t cmd_handle;
    uint8_t *cmd_map;
@@ -35,26 +37,41 @@ struct prismrv_batch {
     * re-writing the cmd/TA BO.  -1 when no previous submit exists.
     */
    int prev_fence_fd;
+
+   /* GPU virtual address of the TA BO (from GEM_CREATE) */
+   uint32_t ta_gpu_va;
+   uint32_t cmd_gpu_va;
+
+   /*
+    * BOs referenced by the command stream through their GPU VA
+    * (TA data, textures, render target).  Submitted as the BO list so
+    * the kernel maps them and orders the job against other users
+    * (implicit sync).  bos[0] is always the TA BO when present.
+    */
+   uint32_t bos[PRISMRV_BATCH_MAX_BOS];
+   unsigned num_bos;
 };
 
-/* vertex element CSO — one per VAO, allocated in create, freed in delete */
-struct prismrv_vertex_element_state {
-   unsigned num_elements;
-   struct prismrv_vertex_element elements[8];
-};
-
-/* bound shader state */
-struct prismrv_shader_state {
-   void *nir;               /* nir_shader after gallium translation */
-   char *usse_text;         /* compiled USSE text */
-   unsigned usse_len;
-};
+#define PRISMRV_MAX_VERTEX_ELEMENTS 4   /* VS inputs live in r0..r15 */
 
 struct prismrv_vertex_element {
    unsigned src_offset;
    enum pipe_format src_format;
    unsigned vertex_buffer_index;
    uint32_t src_stride;             /* stride to the same attrib in the next vertex */
+};
+
+/* vertex element CSO — one per VAO, allocated in create, freed in delete */
+struct prismrv_vertex_element_state {
+   unsigned num_elements;
+   struct prismrv_vertex_element elements[PRISMRV_MAX_VERTEX_ELEMENTS];
+};
+
+/* bound shader state */
+struct prismrv_shader_state {
+   char *usse_text;         /* compiled USSE text (ralloc), NULL if the
+                             * shader could not be compiled */
+   unsigned usse_len;
 };
 
 struct prismrv_sampler_view {
@@ -65,6 +82,8 @@ struct prismrv_sampler_view {
 struct prismrv_blend_state {
    bool blend_enable;
    unsigned rgb_func, rgb_src, rgb_dst;
+   unsigned alpha_func, alpha_src, alpha_dst;
+   unsigned colormask;
 };
 
 struct prismrv_rasterizer_state {
@@ -79,6 +98,9 @@ struct prismrv_depth_stencil_alpha_state {
    unsigned depth_func;         /* PIPE_FUNC_* */
 };
 
+/* dirty bits: state that must be re-sent in the command stream */
+#define PRISMRV_DIRTY_ALL 0xffffffffu
+
 #define PRISMRV_MAX_VIEWPORTS 16
 
 struct prismrv_context {
@@ -92,13 +114,17 @@ struct prismrv_context {
    struct pipe_framebuffer_state framebuffer;
    struct pipe_scissor_state scissors[PRISMRV_MAX_VIEWPORTS];
 
-   /* bound shaders */
-   struct prismrv_shader_state vs;
-   struct prismrv_shader_state fs;
-   /* Privately-owned duplicates of vs.usse_text / fs.usse_text so
-    * that deleting the original shader state does not dangle ctx->vs. */
-   char *vs_usse_owned;
-   char *fs_usse_owned;
+   /* bound shaders (Gallium guarantees a state is unbound before it
+    * is deleted, so plain pointers are safe) */
+   struct prismrv_shader_state *vs;
+   struct prismrv_shader_state *fs;
+
+   /* state that must be re-emitted at the start of the next draw;
+    * reset to ALL at every flush because the executor state is per job */
+   uint32_t dirty;
+
+   struct pipe_viewport_state viewport;
+   bool viewport_valid;
 
    /* fixed-function state */
    struct prismrv_blend_state blend;
@@ -108,18 +134,19 @@ struct prismrv_context {
    /* bound texture views (slot -> resource), consumed by SET_TEXTURE */
    /* pipe_resource refs held for the lifetime of the sampler binding.
     * Released on unbind and on context destroy. */
-   struct pipe_resource *textures[8];
+   struct pipe_resource *textures[8];   /* fragment stage only */
 
    /* set to true when a submit fails; draw_vbo returns immediately until
     * the context is destroyed and re-created */
    bool context_lost;
 
    /* vertex elements */
-   struct prismrv_vertex_element vertex_elements[8];
+   struct prismrv_vertex_element vertex_elements[PRISMRV_MAX_VERTEX_ELEMENTS];
    unsigned num_vertex_elements;
 
    /* bound vertex buffers (set_vertex_buffers) */
    struct pipe_vertex_buffer vertex_buffers[8];
+   const void *user_vertex_buffers[8];
    unsigned num_vertex_buffers;
 
    /* constant buffer data (one slot per stage; shipped as

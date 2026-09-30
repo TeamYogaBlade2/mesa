@@ -7,22 +7,45 @@ kernel driver (drivers/gpu/drm/prismrv in the linux tree).
 ## Multi-core design
 
 `prismrv_chipinfo.c` holds a per-core feature table (SGX530/540/544
-today). The kernel exposes the raw `EUR_CR_CORE_REVISION` register via
-`PRISMRV_PARAM_GPU_ID`; the screen selects a table row at create time,
+today). The kernel exposes `EUR_CR_CORE_ID` and `EUR_CR_CORE_REVISION`
+via `PRISMRV_PARAM_CORE_ID` / `PRISMRV_PARAM_CORE_REVISION`; the screen
+selects a table row at create time,
 so adding another variant is one table entry.
+
+## Command stream ABI: read this first
+
+The driver emits the **PrismRV command stream**
+(`PRISMRV_CMD_ABI_STREAM_V1`, documented at the top of
+`prismrv_context.c`), executed by the PrismRV emulator / a custom
+uKernel.  The Linux driver does not interpret it, and the stock vendor
+uKernel does not understand it.  The screen refuses to start unless the
+kernel reports `PRISMRV_UAPI_VERSION` 3 and this command ABI, and every
+address inside a stream is a GPU VA obtained from `GEM_CREATE`.  This is
+therefore not yet a driver for unmodified SGX hardware firmware.
+
+## Supported subset
+
+Single-basic-block GLSL ES 1.00 style shaders (no branches, loops or
+calls; float ALU mov/neg/add/sub/mul/fma/rcp/rsq; 2D nearest texturing in
+the fragment stage; 4 vertex attributes, 4 vec4 uniforms, one varying).
+Everything else fails shader compilation instead of being approximated.
+`glClear` is a CPU clear; depth/stencil, MSAA, instancing and indirect
+draws are not advertised.  Viewport/scissor/blend/depth/raster state is
+emitted as opcodes 8-12 but has no effect until the executor implements
+them.
 
 ## Build
 
-The driver compiles standalone for syntax/type checking without meson:
+Build with meson (from a Mesa checkout):
 
-    clang -fsyntax-only -std=c11 -DHAVE_ENDIAN_H -D_GNU_SOURCE \
-      -Isrc -Isrc/gallium/include -Isrc/gallium/auxiliary \
-      -Isrc/util -Iinclude src/gallium/drivers/prismrv/*.c
+    meson setup build -Dgallium-drivers=prismrv -Dllvm=disabled \
+      -Dvulkan-drivers=[] -Dglx=disabled -Dplatforms=[] -Degl=enabled \
+      -Dgles2=enabled -Dtools=drm-shim -Dbuild-tests=true
+    ninja -C build
 
-A full meson build additionally needs the driver registered in
-`src/gallium/meson.build` and the DRI target hooked up
-(`drm_helper.h`, see notes in `meson.build`) — deliberately deferred
-until the implementation is functional.
+Unit tests: `prismrv_nir_test` executes the generated USSE text on a tiny
+interpreter and checks the numbers; `meson test --suite prismrv` runs the
+EGL smoke/lifecycle tests on the drm-shim.
 
-`drm-uapi/prismrv_drm.h` is a local copy of the kernel uAPI header;
-keep it in sync with the linux tree.
+`drm-uapi/prismrv_drm.h` is a copy of the kernel uAPI header; keep it in
+sync with `include/uapi/drm/prismrv_drm.h` in the linux tree.

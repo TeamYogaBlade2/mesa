@@ -20,6 +20,7 @@
 #include "prismrv_drmif.h"
 #include "prismrv_resource.h"
 #include "prismrv_fence.h"
+#include "prismrv_program.h"
 
 static const char *
 prismrv_screen_get_name(struct pipe_screen *pscreen)
@@ -84,8 +85,42 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
    if (sample_count > 1 || storage_sample_count > 1)
       return false;
 
-   /* initial support: unorm RGBA8 render targets and sampling only */
-   if (usage & PIPE_BIND_RENDER_TARGET) {
+   /*
+    * Allow-list of bind flags this driver really implements.  Anything
+    * else (depth/stencil, shader buffers/images, streamout, ...) must be
+    * refused, otherwise the state tracker believes it can use them.
+    */
+   const unsigned supported_binds = PIPE_BIND_RENDER_TARGET |
+      PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_VERTEX_BUFFER |
+      PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER |
+      PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED |
+      PIPE_BIND_CUSTOM;
+   if (usage & ~supported_binds)
+      return false;
+
+   if (target == PIPE_BUFFER) {
+      /* plain data: vertex fetch formats only, no RT/sampler use */
+      if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW |
+                   PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT))
+         return false;
+      if (usage & PIPE_BIND_VERTEX_BUFFER) {
+         switch (format) {
+         case PIPE_FORMAT_R32_FLOAT:
+         case PIPE_FORMAT_R32G32_FLOAT:
+         case PIPE_FORMAT_R32G32B32_FLOAT:
+         case PIPE_FORMAT_R32G32B32A32_FLOAT:
+         case PIPE_FORMAT_R8G8B8A8_UNORM:
+         case PIPE_FORMAT_R8G8B8_UNORM:
+            break;
+         default:
+            return false;
+         }
+      }
+      return true;
+   }
+
+   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET |
+                PIPE_BIND_SCANOUT)) {
       switch (format) {
       case PIPE_FORMAT_B8G8R8A8_UNORM:
       case PIPE_FORMAT_R8G8B8A8_UNORM:
@@ -95,18 +130,57 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
       }
    }
    if (usage & PIPE_BIND_SAMPLER_VIEW) {
+      /* the executor reads 4 x f32 per texel; the sampler-view path
+       * converts these 8-bit formats on upload */
       switch (format) {
       case PIPE_FORMAT_B8G8R8A8_UNORM:
       case PIPE_FORMAT_R8G8B8A8_UNORM:
-      case PIPE_FORMAT_R8G8B8_UNORM:
-      case PIPE_FORMAT_A8R8G8B8_UNORM:
          break;
       default:
          return false;
       }
    }
+   /* vertex/index/constant buffers are buffer-only */
+   if (usage & (PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER |
+                PIPE_BIND_CONSTANT_BUFFER))
+      return false;
 
    return true;
+}
+
+static void
+prismrv_init_shader_caps(struct pipe_screen *screen)
+{
+   /* Limits of the NIR backend (prismrv_program.c): straight-line code,
+    * 4 vertex attributes, 4 vec4 uniforms, one varying, 8 textures. */
+   struct pipe_shader_caps *caps =
+      (struct pipe_shader_caps *)&screen->shader_caps[MESA_SHADER_VERTEX];
+
+   caps->max_instructions =
+   caps->max_alu_instructions = 256;
+   caps->max_control_flow_depth = 0;
+   caps->max_inputs = PRISMRV_MAX_VS_ATTRIBS;
+   caps->max_outputs = 2;               /* position + one varying */
+   caps->max_const_buffer0_size = PRISMRV_MAX_UNIFORM_VEC4 * 16;
+   caps->max_const_buffers = 1;
+   caps->max_temps = 128;
+   caps->supported_irs = 1u << PIPE_SHADER_IR_NIR;
+
+   caps = (struct pipe_shader_caps *)
+      &screen->shader_caps[MESA_SHADER_FRAGMENT];
+   caps->max_instructions =
+   caps->max_alu_instructions = 256;
+   caps->max_tex_instructions =
+   caps->max_tex_indirections = 8;
+   caps->max_control_flow_depth = 0;
+   caps->max_inputs = 1;                /* one varying */
+   caps->max_outputs = 1;
+   caps->max_const_buffer0_size = PRISMRV_MAX_UNIFORM_VEC4 * 16;
+   caps->max_const_buffers = 1;
+   caps->max_temps = 128;
+   caps->max_texture_samplers =
+   caps->max_sampler_views = 8;
+   caps->supported_irs = 1u << PIPE_SHADER_IR_NIR;
 }
 
 struct pipe_screen *
@@ -136,9 +210,30 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
     * is treated as a hard error rather than silently continuing
     * with wrong feature flags.
     */
-   core_id_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_ID);
-   core_rev_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_REVISION);
-   if (core_id_raw == UINT64_MAX || core_rev_raw == UINT64_MAX) {
+   uint64_t uapi_ver = 0;
+   int e_ver = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_UAPI_VERSION,
+                                     &uapi_ver);
+   if (e_ver || uapi_ver != PRISMRV_UAPI_VERSION) {
+      fprintf(stderr, "prismrv: kernel UAPI version %" PRIu64 " (%d), "
+              "need %d\n", uapi_ver, e_ver, PRISMRV_UAPI_VERSION);
+      close(screen->fd);
+      ralloc_free(screen);
+      return NULL;
+   }
+   if (prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CMD_ABI,
+                             &screen->cmd_abi) ||
+       screen->cmd_abi != PRISMRV_CMD_ABI_STREAM_V1) {
+      fprintf(stderr, "prismrv: unsupported kernel command ABI\n");
+      close(screen->fd);
+      ralloc_free(screen);
+      return NULL;
+   }
+
+   int e_id = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_ID,
+                                    &core_id_raw);
+   int e_rev = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_REVISION,
+                                     &core_rev_raw);
+   if (e_id || e_rev) {
       fprintf(stderr, "prismrv: GET_PARAM(CORE_ID/CORE_REVISION) failed "
               "— kernel driver too old or UAPI mismatch\n");
       close(screen->fd);
@@ -164,8 +259,7 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
       return NULL;
    }
 
-   errata_raw = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_ERRATA);
-   if (errata_raw == UINT64_MAX) {
+   if (prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_ERRATA, &errata_raw)) {
       fprintf(stderr, "prismrv: GET_PARAM(ERRATA) failed\n");
       close(screen->fd);
       ralloc_free(screen);
@@ -183,6 +277,10 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    screen->base.get_device_vendor = prismrv_screen_get_device_vendor;
    screen->base.context_create = prismrv_screen_context_create;
    screen->base.is_format_supported = prismrv_screen_is_format_supported;
+
+   prismrv_init_shader_caps(&screen->base);
+   for (unsigned i = 0; i < ARRAY_SIZE(screen->base.nir_options); i++)
+      screen->base.nir_options[i] = prismrv_get_nir_options();
 
    caps = (struct pipe_caps *)&screen->base.caps;
    u_init_pipe_screen_caps(&screen->base, 1);
@@ -209,7 +307,30 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    caps->glsl_feature_level_compatibility = 100;
    caps->max_vertex_buffers = ARRAY_SIZE(((struct prismrv_context *)0)->
                                          vertex_buffers);
-   caps->max_varyings = 4;
+   caps->max_varyings = 1;
+   /* what the draw path cannot honour must not be advertised */
+   caps->primitive_restart = false;
+   caps->primitive_restart_fixed_index = false;
+   caps->vertex_element_instance_divisor = false;
+   caps->vs_instanceid = false;
+   caps->start_instance = false;
+   caps->draw_indirect = false;
+   caps->multi_draw_indirect = false;
+   caps->multi_draw_indirect_params = false;
+   caps->user_vertex_buffers = false;
+   caps->texture_swizzle = false;
+   caps->occlusion_query = false;
+   caps->depth_clip_disable = false;
+   caps->anisotropic_filter = false;
+   caps->cube_map_array = false;
+   caps->texture_buffer_objects = false;
+   caps->texture_multisample = false;
+   caps->seamless_cube_map = false;
+   caps->max_stream_output_buffers = 0;
+   caps->max_viewports = 1;
+   caps->max_texture_array_layers = 0;
+   caps->glsl_feature_level = 100;
+   caps->glsl_feature_level_compatibility = 100;
 
    prismrv_resource_screen_init(screen);
    prismrv_fence_screen_init(screen);

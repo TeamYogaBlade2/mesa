@@ -12,7 +12,10 @@
  */
 #include "prismrv_drmif.h"
 
+#include <errno.h>
 #include <fcntl.h>
+#include <xf86drm.h>
+#include <drm-uapi/drm.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <sys/ioctl.h>
@@ -20,45 +23,38 @@
 
 #include "drm-uapi/prismrv_drm.h"  /* local copy from linux tree */
 
-uint64_t
-prismrv_drm_get_param(int fd, uint32_t param)
+int
+prismrv_drm_get_param(int fd, uint32_t param, uint64_t *value)
 {
    struct drm_prismrv_get_param p = { .param = param };
-   if (ioctl(fd, DRM_IOCTL_PRISMRV_GET_PARAM, &p))
-      return UINT64_MAX;
-   return p.value;
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_GET_PARAM, &p))
+      return -errno;
+   *value = p.value;
+   return 0;
 }
 
 uint32_t
-prismrv_drm_gem_create(int fd, uint64_t size)
+prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va)
 {
    struct drm_prismrv_gem_create c = { .size = size };
-   if (ioctl(fd, DRM_IOCTL_PRISMRV_GEM_CREATE, &c))
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_GEM_CREATE, &c))
       return 0;
+   *gpu_va = c.gpu_va;
    return c.handle;
 }
 
 void
 prismrv_drm_gem_close(int fd, uint32_t handle)
 {
-   /* DRM_IOCTL_GEM_CLOSE: _IOWR('d', 0x09, struct drm_gem_close)
-    * struct drm_gem_close = { __u32 handle; __u32 pad; } — 8 bytes */
-   struct { uint32_t handle; uint32_t pad; } arg = { handle, 0 };
-   /* Build the ioctl number the same way the kernel does to avoid
-    * a dependency on <drm/drm.h> in the Mesa tree. */
-#define DRM_IOCTL_BASE_CHAR 'd'
-#define DRM_GEM_CLOSE_NR    0x09
-   unsigned long nr = (3ul << 30) | (sizeof(arg) << 16) |
-                      ((unsigned long)DRM_IOCTL_BASE_CHAR << 8) |
-                      DRM_GEM_CLOSE_NR;
-   ioctl(fd, nr, &arg);
+   struct drm_gem_close arg = { .handle = handle };
+   drmIoctl(fd, DRM_IOCTL_GEM_CLOSE, &arg);
 }
 
 void *
 prismrv_drm_gem_map(int fd, uint32_t handle, uint64_t size)
 {
    struct drm_prismrv_gem_mmap_offset mo = { .handle = handle };
-   if (ioctl(fd, DRM_IOCTL_PRISMRV_GEM_MMAP_OFFSET, &mo))
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_GEM_MMAP_OFFSET, &mo))
       return MAP_FAILED;
 
    return mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -82,7 +78,7 @@ prismrv_drm_submit(int fd, uint32_t cmd_type,
    if (num_bos)
       s.bos = (uintptr_t)bos;
 
-   ret = ioctl(fd, DRM_IOCTL_PRISMRV_SUBMIT, &s);
+   ret = drmIoctl(fd, DRM_IOCTL_PRISMRV_SUBMIT, &s);
    if (ret == 0 && out_fence_fd)
       *out_fence_fd = (int32_t)s.out_fence_fd;
    return ret;

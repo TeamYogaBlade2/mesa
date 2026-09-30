@@ -4,6 +4,7 @@
  *
  * prismrv_resource.c — GEM-backed pipe resources.
  */
+#include "util/u_inlines.h"
 #include "prismrv_resource.h"
 #include "prismrv_context.h"
 
@@ -41,7 +42,8 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
          (uint64_t)res->base.width0 * res->base.height0 * bpp, 4096);
    }
    res->fd = screen->fd;
-   res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size);
+   res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size,
+                                            &res->gpu_va);
 }
 
 void *
@@ -93,12 +95,14 @@ prismrv_resource_create(struct pipe_screen *pscreen,
          return NULL;
       }
    }
-   if (tmpl->depth0 > 1 || tmpl->array_size > 1) {
+   if (tmpl->depth0 > 1 || tmpl->array_size > 1 || tmpl->last_level > 0) {
       FREE(res);
       return NULL;
    }
 
    res->base = *tmpl;
+   pipe_reference_init(&res->base.reference, 1);
+   res->base.screen = pscreen;
    res->base.last_level = 0;
    res->base.nr_samples = 0;
    res->base.nr_storage_samples = 0;
@@ -220,8 +224,14 @@ static void
 prismrv_transfer_unmap(struct pipe_context *pctx,
                        struct pipe_transfer *ptransfer)
 {
-   /* CPU writes are coherent through the mmap; the kernel CCB
-    * cache-control field handles GPU-side coherency on submit. */
+   /*
+    * NOTE: no explicit cache maintenance yet.  BOs are shmem pages
+    * mapped write-combined only when PRISMRV_BO_UNCACHED is set; the
+    * default cached mapping relies on the emulator / a coherent
+    * interconnect.  GPU-side cache control (CCB cache_control, PTE
+    * cache-consistent bit) is not wired up - see the kernel
+    * documentation of the CCB before using this on real hardware.
+    */
    FREE(ptransfer);
 }
 
@@ -240,10 +250,36 @@ static const struct u_transfer_vtbl transfer_vtbl = {
    .transfer_flush_region = prismrv_transfer_flush_region,
 };
 
+static bool
+prismrv_can_create_resource(struct pipe_screen *pscreen,
+                            const struct pipe_resource *tmpl)
+{
+   uint64_t bytes;
+
+   if (tmpl->target != PIPE_BUFFER && tmpl->target != PIPE_TEXTURE_2D &&
+       tmpl->target != PIPE_TEXTURE_RECT)
+      return false;
+   if (tmpl->depth0 > 1 || tmpl->array_size > 1 || tmpl->last_level > 0 ||
+       tmpl->nr_samples > 1)
+      return false;
+   if (tmpl->target == PIPE_BUFFER)
+      bytes = tmpl->width0;
+   else
+      bytes = (uint64_t)tmpl->width0 * tmpl->height0 *
+              util_format_get_blocksize(tmpl->format);
+   return bytes <= UINT32_MAX - 4096;
+}
+
 void
 prismrv_resource_screen_init(struct prismrv_screen *screen)
 {
+   /*
+    * u_transfer_helper only supplies the transfer_* entry points; the
+    * screen's own resource_create/destroy must be installed here.
+    */
+   screen->base.resource_create = prismrv_resource_create;
    screen->base.resource_destroy = prismrv_resource_destroy;
+   screen->base.can_create_resource = prismrv_can_create_resource;
    screen->base.transfer_helper =
       u_transfer_helper_create(&transfer_vtbl, 0);
 }

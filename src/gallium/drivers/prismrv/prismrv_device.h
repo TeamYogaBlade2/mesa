@@ -76,6 +76,7 @@ struct prismrv_screen {
 
    /* cached kernel params */
    uint64_t errata_mask;
+   uint64_t cmd_abi;          /* PRISMRV_PARAM_CMD_ABI */
 };
 
 struct prismrv_resource {
@@ -84,7 +85,7 @@ struct prismrv_resource {
    uint32_t gem_handle;
    void *cpu_map;
    uint64_t mmap_offset;
-   uint32_t gpu_va;
+   uint32_t gpu_va;            /* fixed GPU VA returned by GEM_CREATE */
    size_t size;
 };
 

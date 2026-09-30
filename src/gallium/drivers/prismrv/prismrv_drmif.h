@@ -7,8 +7,10 @@
 
 #include <stdint.h>
 
-uint64_t prismrv_drm_get_param(int fd, uint32_t param);
-uint32_t prismrv_drm_gem_create(int fd, uint64_t size);
+/* returns 0 and fills *value, or a negative errno */
+int prismrv_drm_get_param(int fd, uint32_t param, uint64_t *value);
+/* returns the GEM handle (0 on failure) and the BO's fixed GPU VA */
+uint32_t prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va);
 void prismrv_drm_gem_close(int fd, uint32_t handle);
 void *prismrv_drm_gem_map(int fd, uint32_t handle, uint64_t size);
 int prismrv_drm_submit(int fd, uint32_t cmd_type,

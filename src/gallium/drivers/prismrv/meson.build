@@ -7,6 +7,7 @@ files_prismrv = files(
   'prismrv_context.c',
   'prismrv_drmif.c',
   'prismrv_fence.c',
+  'prismrv_program.c',
   'prismrv_resource.c',
   'prismrv_screen.c',
 )
@@ -38,9 +39,11 @@ if with_tests
   subdir('tests')
 endif
 
+# Compose the driver and its winsys explicitly (winsys_prismrv is defined
+# by winsys/prismrv/drm/meson.build); the final target links this.
 driver_prismrv = declare_dependency(
-  compile_args : [],
-  link_with : libprismrv,
+  compile_args : ['-DGALLIUM_PRISMRV'],
+  link_with : [libprismrv, libprismrvwinsys],
 )
 
 if with_tests
