@@ -140,7 +140,7 @@ prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
 
    /*
     * PRISMRV_SHIM_STREAM_DUMP=<file>: append every submitted stream with
-    * its BO list ("PSTR", cmd_size, num_bos, {va,size}*, bytes).  The
+    * its BO list ("PSTR", cmd_size, num_bos, {va,size,contents}*, stream bytes).  The
     * host test tests/stream_validate_test feeds these to the kernel's
     * prismrv_validate_stream(), proving the stream Mesa produces
     * satisfies the kernel's rules.
@@ -165,8 +165,16 @@ prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
             struct shim_bo *b = drm_shim_bo_lookup(sfd, hs[i]);
             uint32_t rec[2] = { hs[i] < ARRAY_SIZE(shim_va) ? shim_va[hs[i]] : 0,
                                 b ? b->size : 0 };
+            void *bmap = b ? mmap(NULL, b->size, PROT_READ, MAP_SHARED,
+                                  shim_device.mem_fd, b->mem_addr) : MAP_FAILED;
 
+            if (bmap == MAP_FAILED)
+               rec[1] = 0;
             fwrite(rec, 4, 2, f);
+            if (rec[1]) {
+               fwrite(bmap, 1, rec[1], f);   /* BO contents for the host test */
+               munmap(bmap, rec[1]);
+            }
             if (b)
                drm_shim_bo_put(b);
          }

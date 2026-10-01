@@ -23,6 +23,21 @@ kernel reports `PRISMRV_UAPI_VERSION` 3 and this command ABI, and every
 address inside a stream is a GPU VA obtained from `GEM_CREATE`.  This is
 therefore not yet a driver for unmodified SGX hardware firmware.
 
+## Security contract (render node)
+
+The kernel treats every submit as hostile: it accepts only TA jobs,
+snapshots and validates the command stream and the TA packets, restricts
+shaders to the closed text subset the backend emits, and rejects any
+address outside the listed BOs (see `PRISMRV_STREAM_MAX_BYTES` and the
+STREAM_V1 contract in the UAPI header).  If the backend ever emits a new
+mnemonic or packet, the kernel validator (`prismrv_stream.c`) must learn
+it first.  `tests/run_stream_validate.sh <linux-tree> <dump>` checks this
+against real Mesa output (dump with `PRISMRV_SHIM_STREAM_DUMP`).
+
+`PIPE_BIND_DISPLAY_TARGET` is advertised for colour formats only so the
+DRI frontend creates configs; there is no window-system presentation or
+export path yet, so only surfaceless/pbuffer rendering is meaningful.
+
 ## Supported subset
 
 Single-basic-block GLSL ES 1.00 style shaders (no branches, loops or
