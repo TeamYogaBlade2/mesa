@@ -23,6 +23,16 @@ if with_egl
   test('prismrv-smoke', libprismrv_smoke,
     env: [
       'LD_PRELOAD=' + libprismrv_noop_drm_shim.full_path(),
+      # Use the EGL/gallium just built, not the system Mesa: without
+      # these the loader silently falls back to llvmpipe and the test
+      # never touches this driver (the tests now check GL_RENDERER).
+      '__EGL_VENDOR_LIBRARY_FILENAMES=' + meson.project_build_root() /
+         'src/egl/devenv_glvnd_egl.json',
+      'LD_LIBRARY_PATH=' + ':'.join([
+         meson.project_build_root() / 'src/gallium/targets/dri',
+         meson.project_build_root() / 'src/egl',
+         meson.project_build_root() / 'src/gallium/drivers/prismrv/drm-shim',
+      ]),
       'DRM_SHIM_DEBUG=1',
       'EGL_PLATFORM=surfaceless',
       'MESA_LOADER_DRIVER_OVERRIDE=prismrv',
@@ -45,6 +55,16 @@ if with_egl
   test('prismrv-lifecycle', libprismrv_lifecycle,
     env: [
       'LD_PRELOAD=' + libprismrv_noop_drm_shim.full_path(),
+      # Use the EGL/gallium just built, not the system Mesa: without
+      # these the loader silently falls back to llvmpipe and the test
+      # never touches this driver (the tests now check GL_RENDERER).
+      '__EGL_VENDOR_LIBRARY_FILENAMES=' + meson.project_build_root() /
+         'src/egl/devenv_glvnd_egl.json',
+      'LD_LIBRARY_PATH=' + ':'.join([
+         meson.project_build_root() / 'src/gallium/targets/dri',
+         meson.project_build_root() / 'src/egl',
+         meson.project_build_root() / 'src/gallium/drivers/prismrv/drm-shim',
+      ]),
       'EGL_PLATFORM=surfaceless',
       'MESA_LOADER_DRIVER_OVERRIDE=prismrv',
       'MESA_DEBUG=1',

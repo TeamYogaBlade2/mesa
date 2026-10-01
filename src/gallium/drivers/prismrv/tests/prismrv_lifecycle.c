@@ -19,6 +19,7 @@
  * Any crash, hang or assertion is a regression.
  */
 #include <assert.h>
+#include "prismrv_test_common.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,6 +148,11 @@ main(void)
       fprintf(stderr, "LIFE: make current\n"); return 77;
    }
    printf("LIFE: renderer %.50s\n", (const char *)glGetString(GL_RENDERER));
+   if (require_prismrv_renderer())
+      return 1;
+   GLuint main_fbo = make_render_target();
+   if (!main_fbo)
+      return 1;
 
    glGenBuffers(1, &vbo);
    glBindBuffer(GL_ARRAY_BUFFER, vbo);
@@ -209,7 +215,7 @@ main(void)
       glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                              GL_TEXTURE_2D, tex, 0);
       glClear(GL_COLOR_BUFFER_BIT);
-      glBindFramebuffer(GL_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_FRAMEBUFFER, main_fbo);
       glDeleteFramebuffers(1, &fbo);
       glDeleteTextures(1, &tex);
    }

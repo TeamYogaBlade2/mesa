@@ -19,6 +19,35 @@
 #include "util/format/u_format.h"
 
 #include "prismrv_drmif.h"
+#include "util/u_math.h"
+
+/* Dimension of mip @level */
+static inline unsigned
+prismrv_level_dim(unsigned base, unsigned level)
+{
+   return MAX2(base >> level, 1u);
+}
+
+/*
+ * Compute the packed mip layout.  Each level is tightly packed
+ * (stride = width * bpp) and 64-byte aligned; returns the total size
+ * (not yet page aligned).  Level 0 is always at offset 0.
+ */
+static uint64_t
+prismrv_compute_layout(struct prismrv_resource *res)
+{
+   const struct pipe_resource *b = &res->base;
+   unsigned bpp = util_format_get_blocksize(b->format);
+   uint64_t off = 0;
+
+   for (unsigned l = 0; l <= b->last_level && l < PIPE_MAX_TEXTURE_LEVELS; l++) {
+      res->level_offset[l] = (uint32_t)off;
+      off += (uint64_t)prismrv_level_dim(b->width0, l) *
+             prismrv_level_dim(b->height0, l) * bpp;
+      off = align64(off, 64);
+   }
+   return off;
+}
 
 /* GEM allocation: create a BO of the given size and cache the mapping. */
 void
@@ -37,9 +66,7 @@ prismrv_resource_allocate_gpu(struct prismrv_screen *screen,
        * format with a different block size, e.g. R8G8B8 (3 bytes/px)
        * would under-allocate by 25 %, causing out-of-bounds writes.
        */
-      unsigned bpp = util_format_get_blocksize(res->base.format);
-      res->size = align64(
-         (uint64_t)res->base.width0 * res->base.height0 * bpp, 4096);
+      res->size = align64(prismrv_compute_layout(res), 4096);
    }
    res->fd = screen->fd;
    res->gem_handle = prismrv_drm_gem_create(screen->fd, res->size,
@@ -89,13 +116,15 @@ prismrv_resource_create(struct pipe_screen *pscreen,
          ? 1 : util_format_get_blocksize(tmpl->format);
       uint64_t bytes = (tmpl->target == PIPE_BUFFER)
          ? align64(tmpl->width0, 4096)
-         : align64((uint64_t)tmpl->width0 * tmpl->height0 * bpp, 4096);
+         : align64((uint64_t)tmpl->width0 * tmpl->height0 * bpp * 2, 4096);
+      /* (x2 bounds a full mip chain, which is < 4/3 of level 0) */
       if (bytes > (uint64_t)UINT32_MAX) {
          FREE(res);
          return NULL;
       }
    }
-   if (tmpl->depth0 > 1 || tmpl->array_size > 1 || tmpl->last_level > 0) {
+   if (tmpl->depth0 > 1 || tmpl->array_size > 1 ||
+       tmpl->last_level >= PIPE_MAX_TEXTURE_LEVELS) {
       FREE(res);
       return NULL;
    }
@@ -103,7 +132,6 @@ prismrv_resource_create(struct pipe_screen *pscreen,
    res->base = *tmpl;
    pipe_reference_init(&res->base.reference, 1);
    res->base.screen = pscreen;
-   res->base.last_level = 0;
    res->base.nr_samples = 0;
    res->base.nr_storage_samples = 0;
    res->fd = -1;   /* set by prismrv_resource_allocate_gpu() */
@@ -139,14 +167,6 @@ prismrv_resource_destroy(struct pipe_screen *pscreen,
    FREE(res);
 }
 
-static unsigned
-prismrv_get_offset(const struct pipe_resource *pres,
-                   const struct pipe_box *box)
-{
-   unsigned bpp = util_format_get_blocksize(pres->format);
-   return box->y * pres->width0 * bpp + box->x * bpp;
-}
-
 static void *
 prismrv_transfer_map(struct pipe_context *pctx,
                      struct pipe_resource *pres,
@@ -159,7 +179,7 @@ prismrv_transfer_map(struct pipe_context *pctx,
    struct prismrv_resource *res = to_prismrv_resource(pres);
    struct prismrv_screen *screen = ctx->screen;
 
-   if (!res->gem_handle)
+   if (!res->gem_handle || level > pres->last_level)
       return NULL;
 
    /*
@@ -210,14 +230,18 @@ prismrv_transfer_map(struct pipe_context *pctx,
    pt->box = *box;
    {
       unsigned bpp = util_format_get_blocksize(pres->format);
-      pt->stride = pres->width0 * bpp;
+      pt->stride = prismrv_level_dim(pres->width0, level) * bpp;
    }
-   pt->layer_stride = pt->stride;
+   pt->layer_stride = pt->stride * prismrv_level_dim(pres->height0, level);
 
    *ptransfer = pt;
 
-   unsigned offset = prismrv_get_offset(pres, box);
-   return res->cpu_map + offset;
+   uint64_t offset = (pres->target == PIPE_BUFFER ? 0 : res->level_offset[level]) +
+                     (uint64_t)box->y * pt->stride +
+                     (uint64_t)box->x * util_format_get_blocksize(pres->format);
+   if (pres->target == PIPE_BUFFER)
+      offset = box->x;
+   return (uint8_t *)res->cpu_map + offset;
 }
 
 static void
@@ -259,14 +283,14 @@ prismrv_can_create_resource(struct pipe_screen *pscreen,
    if (tmpl->target != PIPE_BUFFER && tmpl->target != PIPE_TEXTURE_2D &&
        tmpl->target != PIPE_TEXTURE_RECT)
       return false;
-   if (tmpl->depth0 > 1 || tmpl->array_size > 1 || tmpl->last_level > 0 ||
-       tmpl->nr_samples > 1)
+   if (tmpl->depth0 > 1 || tmpl->array_size > 1 ||
+       tmpl->last_level >= PIPE_MAX_TEXTURE_LEVELS || tmpl->nr_samples > 1)
       return false;
    if (tmpl->target == PIPE_BUFFER)
       bytes = tmpl->width0;
    else
       bytes = (uint64_t)tmpl->width0 * tmpl->height0 *
-              util_format_get_blocksize(tmpl->format);
+              util_format_get_blocksize(tmpl->format) * 2;
    return bytes <= UINT32_MAX - 4096;
 }
 

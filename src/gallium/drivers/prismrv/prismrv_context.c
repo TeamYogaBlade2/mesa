@@ -13,16 +13,21 @@
  * their GPU virtual addresses.  All addresses inside the stream are GPU
  * VAs taken from GEM_CREATE (never GEM handles).
  *
+ *   The kernel validates layer 1 (see the linux prismrv_stream.c): every
+ *   address range must lie inside a BO listed in the submit, unknown
+ *   opcodes are rejected.  Keep the two in sync.
+ *
  *   layer 1 (cmd BO):  [u32 opcode][u32 words][payload...]
  *     0  NOP
- *     1  SET_RT        {w, h, gpu_va, stride_bytes, pipe_format}
- *                      (first two words are what older executors read)
+ *     1  SET_RT        {w, h, gpu_va, stride_bytes, PRISMRV_FMT_*}
+ *                      (gpu_va 0 / stride 0 = no render target)
  *     2  SET_PROG_VS   {usse text, NUL-padded}
  *     3  SET_PROG_FS   {usse text, NUL-padded}
- *     4  SET_UNIFORMS  {f32 x 4 per uniform; VS block then FS block}
+ *     4  SET_UNIFORMS  {stage (0=VS,1=FS), f32 x 4 per uniform}; sent once
+ *                      per stage, each stage's uniform 0 is its own r16
  *     5  DRAW          {ta_va lo, ta_va hi, ta_len, first}
  *     6  BARRIER
- *     7  SET_TEXTURE   {slot, w, h, gpu_va}
+ *     7  SET_TEXTURE   {slot, w, h, gpu_va, stride_bytes, PRISMRV_FMT_*}
  *     8  SET_VIEWPORT  {f32 scale[3], f32 translate[3]}
  *     9  SET_SCISSOR   {enable, minx, miny, maxx, maxy}
  *    10  SET_BLEND     {enable, rgb_func, rgb_src, rgb_dst,
@@ -79,6 +84,24 @@ enum {
 
 /* vertices per DRAW packet; keeps one TA stream small and bounded */
 #define PRISMRV_MAX_CHUNK_VERTS 240
+
+/* Gallium format -> stream surface code; -1 if the executor cannot use it */
+static int
+prismrv_stream_format(enum pipe_format f)
+{
+   switch (f) {
+   case PIPE_FORMAT_R8G8B8A8_UNORM:
+   case PIPE_FORMAT_R8G8B8X8_UNORM:
+      return PRISMRV_FMT_RGBA8_UNORM;
+   case PIPE_FORMAT_B8G8R8A8_UNORM:
+   case PIPE_FORMAT_B8G8R8X8_UNORM:
+      return PRISMRV_FMT_BGRA8_UNORM;
+   case PIPE_FORMAT_R32G32B32A32_FLOAT:
+      return PRISMRV_FMT_RGBA32F;
+   default:
+      return -1;
+   }
+}
 
 /* ---- batch bookkeeping ----------------------------------------------- */
 
@@ -285,8 +308,8 @@ prismrv_state_words(const struct prismrv_context *ctx)
       n += 2 + (ctx->vs->usse_len + 4) / 4;
    if (ctx->fs && ctx->fs->usse_text)
       n += 2 + (ctx->fs->usse_len + 4) / 4;
-   n += 2 + (ctx->num_vs_constants + ctx->num_fs_constants) * 4;
-   n += 8 * (2 + 4);                    /* textures */
+   n += 2 * (2 + 1) + (ctx->num_vs_constants + ctx->num_fs_constants) * 4;
+   n += 8 * (2 + 6);                    /* textures */
    n += (2 + 6) + (2 + 5) + (2 + 8) + (2 + 3) + (2 + 2);
    return n;
 }
@@ -314,15 +337,17 @@ prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
    /* SET_RT: geometry plus the render target BO (written by the job) */
    out[off++] = OP_SET_RT; out[off++] = 5;
    out[off++] = fb->width; out[off++] = fb->height;
-   if (fb->nr_cbufs && fb->cbufs[0].texture) {
+   int rt_fmt = (fb->nr_cbufs && fb->cbufs[0].texture) ?
+      prismrv_stream_format(fb->cbufs[0].texture->format) : -1;
+   if (rt_fmt >= 0) {
       struct prismrv_resource *rt = to_prismrv_resource(fb->cbufs[0].texture);
 
       out[off++] = rt->gpu_va;
       out[off++] = rt->base.width0 * util_format_get_blocksize(rt->base.format);
-      out[off++] = rt->base.format;
+      out[off++] = rt_fmt;
       prismrv_batch_add_bo(ctx, rt->gem_handle);
    } else {
-      out[off++] = 0; out[off++] = 0; out[off++] = PIPE_FORMAT_NONE;
+      out[off++] = 0; out[off++] = 0; out[off++] = PRISMRV_FMT_RGBA8_UNORM;
    }
 
    if (ctx->vs && ctx->vs->usse_text)
@@ -330,26 +355,39 @@ prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
    if (ctx->fs && ctx->fs->usse_text)
       prismrv_emit_program(out, &off, OP_SET_PROG_FS, ctx->fs);
 
-   if (ctx->num_vs_constants || ctx->num_fs_constants) {
-      unsigned nv = ctx->num_vs_constants, nf = ctx->num_fs_constants;
-
+   if (ctx->num_vs_constants) {
       out[off++] = OP_SET_UNIFORMS;
-      out[off++] = (nv + nf) * 4;
-      memcpy(out + off, ctx->vs_constants, nv * 16); off += nv * 4;
-      memcpy(out + off, ctx->fs_constants, nf * 16); off += nf * 4;
+      out[off++] = 1 + ctx->num_vs_constants * 4;
+      out[off++] = 0;                       /* stage: vertex */
+      memcpy(out + off, ctx->vs_constants, ctx->num_vs_constants * 16);
+      off += ctx->num_vs_constants * 4;
+   }
+   if (ctx->num_fs_constants) {
+      out[off++] = OP_SET_UNIFORMS;
+      out[off++] = 1 + ctx->num_fs_constants * 4;
+      out[off++] = 1;                       /* stage: fragment */
+      memcpy(out + off, ctx->fs_constants, ctx->num_fs_constants * 16);
+      off += ctx->num_fs_constants * 4;
    }
 
-   /* textures carry the BO's GPU VA (never the GEM handle) */
+   /* textures carry the BO's GPU VA plus stride and format: the
+    * executor needs both to decode the texels */
    for (unsigned t = 0; t < 8; t++) {
       struct prismrv_resource *tex = to_prismrv_resource(ctx->textures[t]);
+      int fmt;
 
       if (!tex)
          continue;
-      out[off++] = OP_SET_TEXTURE; out[off++] = 4;
+      fmt = prismrv_stream_format(tex->base.format);
+      if (fmt < 0)
+         continue;
+      out[off++] = OP_SET_TEXTURE; out[off++] = 6;
       out[off++] = t;
       out[off++] = tex->base.width0;
       out[off++] = tex->base.height0;
       out[off++] = tex->gpu_va;
+      out[off++] = tex->base.width0 * util_format_get_blocksize(tex->base.format);
+      out[off++] = fmt;
       prismrv_batch_add_bo(ctx, tex->gem_handle);
    }
 
@@ -1014,6 +1052,73 @@ prismrv_bind_vertex_elements(struct pipe_context *pctx, void *state)
    }
 }
 
+/* ---- state the executor cannot use: accepted and ignored -------------- */
+
+/*
+ * The state tracker calls these unconditionally when it validates state
+ * (a NULL callback crashes the first draw).  The corresponding GL
+ * features are either not advertised in the caps or have no executor
+ * equivalent yet; see the "Supported subset" section of the README.
+ */
+static void
+prismrv_set_blend_color(struct pipe_context *pctx,
+                        const struct pipe_blend_color *color)
+{
+}
+
+static void
+prismrv_set_stencil_ref(struct pipe_context *pctx,
+                        const struct pipe_stencil_ref ref)
+{
+}
+
+static void
+prismrv_set_sample_mask(struct pipe_context *pctx, unsigned sample_mask)
+{
+}
+
+static void
+prismrv_set_min_samples(struct pipe_context *pctx, unsigned min_samples)
+{
+}
+
+static void
+prismrv_set_clip_state(struct pipe_context *pctx,
+                       const struct pipe_clip_state *state)
+{
+}
+
+static void
+prismrv_set_polygon_stipple(struct pipe_context *pctx,
+                            const struct pipe_poly_stipple *stipple)
+{
+}
+
+static void
+prismrv_flush_resource(struct pipe_context *pctx,
+                       struct pipe_resource *resource)
+{
+   /* nothing is cached on the GPU side that a flush could make visible */
+}
+
+static void
+prismrv_texture_barrier(struct pipe_context *pctx, unsigned flags)
+{
+   /* every draw is followed by BARRIER in the stream already */
+}
+
+static void
+prismrv_memory_barrier(struct pipe_context *pctx, unsigned flags)
+{
+}
+
+static enum pipe_reset_status
+prismrv_get_device_reset_status(struct pipe_context *pctx)
+{
+   return to_prismrv_context(pctx)->context_lost ?
+      PIPE_GUILTY_CONTEXT_RESET : PIPE_NO_RESET;
+}
+
 /* ---- clears ------------------------------------------------------------ */
 
 /*
@@ -1178,6 +1283,16 @@ prismrv_context_init(struct prismrv_context *ctx)
    pctx->texture_subdata = u_default_texture_subdata;
    pctx->clear_buffer = u_default_clear_buffer;
    pctx->clear = prismrv_clear;
+   pctx->set_blend_color = prismrv_set_blend_color;
+   pctx->set_stencil_ref = prismrv_set_stencil_ref;
+   pctx->set_sample_mask = prismrv_set_sample_mask;
+   pctx->set_min_samples = prismrv_set_min_samples;
+   pctx->set_clip_state = prismrv_set_clip_state;
+   pctx->set_polygon_stipple = prismrv_set_polygon_stipple;
+   pctx->flush_resource = prismrv_flush_resource;
+   pctx->texture_barrier = prismrv_texture_barrier;
+   pctx->memory_barrier = prismrv_memory_barrier;
+   pctx->get_device_reset_status = prismrv_get_device_reset_status;
 
    ctx->dirty = PRISMRV_DIRTY_ALL;
    ctx->batch.prev_fence_fd = -1;

@@ -15,6 +15,7 @@
  * covered by driver/ums/test_mesa_stream.py in the prismrv repo.
  */
 #include <assert.h>
+#include "prismrv_test_common.h"
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -109,6 +110,11 @@ main(void)
           (const char *)glGetString(GL_RENDERER),
           (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION));
 
+   if (require_prismrv_renderer())
+      return 1;
+   if (!make_render_target())
+      return 1;
+
    /* --- program + VBO + draw ------------------------------------- */
    GLuint vs = compile(GL_VERTEX_SHADER, vs_src);
    GLuint fs = compile(GL_FRAGMENT_SHADER, fs_src);
@@ -153,6 +159,14 @@ main(void)
     * eventfd fence) */
    glFinish();
 
+   {
+      GLenum err = glGetError();
+
+      if (err != GL_NO_ERROR) {
+         fprintf(stderr, "FAIL: GL error 0x%x after draw\n", err);
+         return 1;
+      }
+   }
    printf("SMOKE: draw + finish completed without crashing\n");
    printf("SMOKE PASS\n");
    return 0;

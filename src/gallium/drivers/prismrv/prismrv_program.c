@@ -491,8 +491,30 @@ prismrv_lower_and_optimize(nir_shader *nir)
    return true;
 }
 
+static char *prismrv_nir_to_usse_owned(void *memctx, nir_shader *nir);
+
+/*
+ * The caller's shader is left untouched: the lowering passes run on a
+ * private clone, which is freed here.  (Ownership of the NIR given to
+ * create_*_state is the caller's business; a compiler entry point that
+ * mutates and frees its argument breaks as soon as the same NIR is also
+ * used by a shader cache or a second compile.)
+ */
 char *
 prismrv_nir_to_usse(void *memctx, nir_shader *nir)
+{
+   nir_shader *clone = nir_shader_clone(NULL, nir);
+   char *text;
+
+   if (!clone)
+      return NULL;
+   text = prismrv_nir_to_usse_owned(memctx, clone);
+   ralloc_free(clone);
+   return text;
+}
+
+static char *
+prismrv_nir_to_usse_owned(void *memctx, nir_shader *nir)
 {
    struct emit_ctx c = { 0 };
    nir_function_impl *impl;

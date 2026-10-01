@@ -41,6 +41,12 @@ prismrv_screen_get_device_vendor(struct pipe_screen *pscreen)
    return "Imagination Technologies";
 }
 
+static int
+prismrv_get_screen_fd(struct pipe_screen *pscreen)
+{
+   return to_prismrv_screen(pscreen)->fd;
+}
+
 static void
 prismrv_screen_destroy(struct pipe_screen *pscreen)
 {
@@ -90,18 +96,30 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
     * else (depth/stencil, shader buffers/images, streamout, ...) must be
     * refused, otherwise the state tracker believes it can use them.
     */
+   /*
+    * SCANOUT / SHARED / CUSTOM are refused: there is no
+    * resource_get_handle / resource_from_handle / modifier support, so
+    * they would promise export/import and scanout that do not exist.
+    *
+    * DISPLAY_TARGET is accepted for the colour formats only because the
+    * DRI frontend (dri_fill_in_modes) refuses to create a single EGL/GL
+    * config for a format unless RENDER_TARGET|DISPLAY_TARGET is
+    * supported.  It means "can be the colour buffer of a drawable"; the
+    * resulting buffers cannot be exported or presented to a window
+    * system until resource_get_handle exists (surfaceless/pbuffer
+    * rendering and glReadPixels work).
+    */
    const unsigned supported_binds = PIPE_BIND_RENDER_TARGET |
       PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_VERTEX_BUFFER |
       PIPE_BIND_INDEX_BUFFER | PIPE_BIND_CONSTANT_BUFFER |
-      PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT | PIPE_BIND_SHARED |
-      PIPE_BIND_CUSTOM;
+      PIPE_BIND_DISPLAY_TARGET;
    if (usage & ~supported_binds)
       return false;
 
    if (target == PIPE_BUFFER) {
       /* plain data: vertex fetch formats only, no RT/sampler use */
       if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW |
-                   PIPE_BIND_DISPLAY_TARGET | PIPE_BIND_SCANOUT))
+                   PIPE_BIND_DISPLAY_TARGET))
          return false;
       if (usage & PIPE_BIND_VERTEX_BUFFER) {
          switch (format) {
@@ -119,8 +137,7 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
       return true;
    }
 
-   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET |
-                PIPE_BIND_SCANOUT)) {
+   if (usage & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET)) {
       switch (format) {
       case PIPE_FORMAT_B8G8R8A8_UNORM:
       case PIPE_FORMAT_R8G8B8A8_UNORM:
@@ -130,8 +147,8 @@ prismrv_screen_is_format_supported(struct pipe_screen *pscreen,
       }
    }
    if (usage & PIPE_BIND_SAMPLER_VIEW) {
-      /* the executor reads 4 x f32 per texel; the sampler-view path
-       * converts these 8-bit formats on upload */
+      /* SET_TEXTURE carries format + stride; the executor decodes
+       * these 8-bit formats itself */
       switch (format) {
       case PIPE_FORMAT_B8G8R8A8_UNORM:
       case PIPE_FORMAT_R8G8B8A8_UNORM:
@@ -272,6 +289,7 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
                 (uint32_t)screen->errata_mask);
 
    screen->base.destroy = prismrv_screen_destroy;
+   screen->base.get_screen_fd = prismrv_get_screen_fd;
    screen->base.get_name = prismrv_screen_get_name;
    screen->base.get_vendor = prismrv_screen_get_vendor;
    screen->base.get_device_vendor = prismrv_screen_get_device_vendor;

@@ -16,7 +16,9 @@
  * libprismrv.py):
  *
  *   r0..r15    VS attributes: element i occupies r[4*i .. 4*i+3]
- *   r16..r31   uniforms (vec4 i at r[16+4*i])
+ *   r16..r31   uniforms of the stage being run (vec4 i at r[16+4*i]);
+ *              VS and FS each have their own block (SET_UNIFORMS carries
+ *              a stage word), so both start at r16
  *   r32..r35   FS: the single interpolated varying (rgb + alpha 1.0)
  *   r60..r62   constants 0.0 / 1.0 / -1.0 (materialised by the program)
  *   r64..r255  temporaries (linear allocation, no reuse)
@@ -30,9 +32,8 @@
 const nir_shader_compiler_options *prismrv_get_nir_options(void);
 
 /*
- * Lower and optimise @nir for the backend, then emit USSE text (ralloc'd
- * off @memctx).  Takes ownership of neither @memctx nor @nir contents
- * beyond in-place lowering.  Returns NULL if the shader uses anything the
+ * Lower and optimise a private clone of @nir for the backend, then emit
+ * USSE text (ralloc'd off @memctx).  @nir itself is not modified.  Returns NULL if the shader uses anything the
  * backend cannot express: unsupported constructs are never silently
  * dropped or miscompiled.
  */

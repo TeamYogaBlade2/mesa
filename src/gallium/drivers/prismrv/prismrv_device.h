@@ -87,6 +87,9 @@ struct prismrv_resource {
    uint64_t mmap_offset;
    uint32_t gpu_va;            /* fixed GPU VA returned by GEM_CREATE */
    size_t size;
+   /* mip chain packed in one BO; level 0 is at offset 0 (the executor
+    * only samples level 0, so SET_TEXTURE needs no level offset) */
+   uint32_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
 
 static inline struct prismrv_screen *

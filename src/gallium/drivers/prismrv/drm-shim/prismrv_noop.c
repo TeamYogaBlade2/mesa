@@ -9,7 +9,9 @@
 
 #include <limits.h>
 #include <stdio.h>
+#include <sys/mman.h>
 #include <stdlib.h>
+#include "util/macros.h"
 #include <sys/eventfd.h>
 
 #include "drm-shim/drm_shim.h"
@@ -77,6 +79,9 @@ prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
    }
 }
 
+/* handle -> fixed GPU VA, for the optional stream dump below */
+static uint32_t shim_va[8192];
+
 static int
 prismrv_ioctl_gem_create(int fd, unsigned long request, void *arg)
 {
@@ -96,6 +101,8 @@ prismrv_ioctl_gem_create(int fd, unsigned long request, void *arg)
       create->gpu_va = next_va;
       create->pad = 0;
       next_va += size;
+      if (create->handle < ARRAY_SIZE(shim_va))
+         shim_va[create->handle] = create->gpu_va;
    }
 
    drm_shim_bo_put(bo);
@@ -130,6 +137,48 @@ prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
     * forever (glFinish hung on exactly this).
     */
    uint64_t one = 1;
+
+   /*
+    * PRISMRV_SHIM_STREAM_DUMP=<file>: append every submitted stream with
+    * its BO list ("PSTR", cmd_size, num_bos, {va,size}*, bytes).  The
+    * host test tests/stream_validate_test feeds these to the kernel's
+    * prismrv_validate_stream(), proving the stream Mesa produces
+    * satisfies the kernel's rules.
+    */
+   const char *dump = getenv("PRISMRV_SHIM_STREAM_DUMP");
+   if (dump) {
+      struct shim_fd *sfd = drm_shim_fd_lookup(fd);
+      struct shim_bo *cmd = drm_shim_bo_lookup(sfd, submit->cmd_handle);
+      const uint32_t *hs = (const uint32_t *)(uintptr_t)submit->bos;
+      FILE *f = fopen(dump, "ab");
+
+      /* BO memory is a window into the shim's memfd at bo->mem_addr */
+      void *cmap = (f && cmd && submit->cmd_size <= cmd->size) ?
+         mmap(NULL, cmd->size, PROT_READ, MAP_SHARED, shim_device.mem_fd,
+              cmd->mem_addr) : MAP_FAILED;
+
+      if (cmap != MAP_FAILED) {
+         uint32_t hdr[3] = { 0x52545350u, submit->cmd_size, submit->num_bos };
+
+         fwrite(hdr, 4, 3, f);
+         for (unsigned i = 0; i < submit->num_bos; i++) {
+            struct shim_bo *b = drm_shim_bo_lookup(sfd, hs[i]);
+            uint32_t rec[2] = { hs[i] < ARRAY_SIZE(shim_va) ? shim_va[hs[i]] : 0,
+                                b ? b->size : 0 };
+
+            fwrite(rec, 4, 2, f);
+            if (b)
+               drm_shim_bo_put(b);
+         }
+         fwrite(cmap, 1, submit->cmd_size, f);
+         munmap(cmap, cmd->size);
+      }
+      if (cmd)
+         drm_shim_bo_put(cmd);
+      if (f)
+         fclose(f);
+   }
+
    int efd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
    if (efd < 0)
       return -1;
