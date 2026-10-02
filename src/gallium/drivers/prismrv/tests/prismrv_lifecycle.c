@@ -227,14 +227,27 @@ main(void)
       EGLContext tmp = eglCreateContext(dpy, cfg, ctx, ca);
       if (tmp != EGL_NO_CONTEXT) {
          eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, tmp);
+         /* a fresh context has only the incomplete surfaceless default
+          * framebuffer: give it a real render target or the clear never
+          * reaches the driver */
+         if (!make_render_target())
+            return 1;
          glClearColor(.1f * i, 0, 0, 1);
          glClear(GL_COLOR_BUFFER_BIT);
+         if (glGetError() != GL_NO_ERROR) {
+            fprintf(stderr, "FAIL: GL error in context churn\n");
+            return 1;
+         }
          eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, ctx);
          eglDestroyContext(dpy, tmp);
       }
    }
    printf("LIFE: context churn done\n");
 
+   if (glGetError() != GL_NO_ERROR) {
+      fprintf(stderr, "FAIL: GL error left over\n");
+      return 1;
+   }
    printf("LIFE PASS\n");
    return 0;
 }

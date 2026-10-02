@@ -38,6 +38,15 @@ against real Mesa output (dump with `PRISMRV_SHIM_STREAM_DUMP`).
 DRI frontend creates configs; there is no window-system presentation or
 export path yet, so only surfaceless/pbuffer rendering is meaningful.
 
+## Known semantic gaps
+
+* Sampler state (wrap, filter, mip filter) is carried in `SET_TEXTURE`
+  but the PrismRV executor still samples nearest + clamp from level 0;
+  mip chains are allocated but only level 0 is addressed.
+* CPU access to a resource waits for the whole context's GPU work (no
+  per-resource tracking), and the kernel does cache maintenance when a
+  job retires; neither is exercised by the no-op drm-shim.
+
 ## Supported subset
 
 Single-basic-block GLSL ES 1.00 style shaders (no branches, loops or

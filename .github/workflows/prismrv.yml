@@ -9,10 +9,15 @@ on:
       - 'src/gallium/meson.build'
       - 'meson.options'
       - '.github/workflows/prismrv.yml'
+  # PR #1 targets main; a filter on the source branch name would never fire
   pull_request:
-    branches: [prismrv-oxalpha]
+    branches: [main, prismrv-oxalpha]
     paths:
       - 'src/gallium/drivers/prismrv/**'
+      - 'src/gallium/winsys/prismrv/**'
+      - 'src/gallium/auxiliary/pipe-loader/**'
+      - 'src/gallium/auxiliary/target-helpers/**'
+      - '.github/workflows/prismrv.yml'
 
 permissions:
   contents: read
@@ -76,6 +81,31 @@ jobs:
           exit 1
         }
 
+    # The security argument for the render node lives in the Linux
+    # driver's command-stream validator.  Check it against streams this
+    # exact Mesa build produced.  The linux repo may be private: provide a
+    # read token as the LINUX_REPO_TOKEN secret (falls back to the
+    # default token, which suffices for a public repository).
+    - name: Check out the Linux driver (validator source)
+      uses: actions/checkout@v4
+      with:
+        repository: TeamYogaBlade2/linux
+        ref: dev/v7.1/prismrv-drm
+        path: linux-src
+        token: ${{ secrets.LINUX_REPO_TOKEN || github.token }}
+        sparse-checkout: |
+          drivers/gpu/drm/prismrv
+          include/uapi/drm
+
+    - name: Kernel stream validator vs. real Mesa streams
+      run: |
+        rm -f "$PWD/streams.bin"
+        PRISMRV_SHIM_STREAM_DUMP="$PWD/streams.bin" \
+          meson test -C build prismrv-smoke prismrv-lifecycle --print-errorlogs
+        test -s streams.bin
+        src/gallium/drivers/prismrv/tests/run_stream_validate.sh \
+          "$PWD/linux-src" "$PWD/streams.bin"
+
   syntax-only:
     runs-on: ubuntu-22.04
     steps:
@@ -96,7 +126,7 @@ jobs:
         done
 
   # Cross-compile the driver for the real hardware target:
-  # Lenovo Yoga Tablet 8 B8000-F (MT6589, ARMv7 Cortex-A9 + NEON, SGX544 GPU).
+  # Lenovo Yoga Tablet 8 B8000-F (MT6589, ARMv7 Cortex-A7 + NEON, SGX544 GPU).
   # Produces a drop-in tarball (gallium_dri.so mega-driver incl. prismrv,
   # libEGL, libglapi) and publishes it to GitHub Releases.
   armhf-release:
@@ -183,7 +213,7 @@ jobs:
         endian = 'little'
 
         [properties]
-        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A9 + NEON, hard-float ABI.
+        # Yoga Tablet 8 B8000-F: MT6589 = 4x Cortex-A7 + NEON, hard-float ABI.
         # -I: meson drops the sysroot-prefix include coming from libdrm.pc,
         #     hiding /usr/include/xf86drm.h
         # -DGALLIUM_PRISMRV: make sure the driver descriptor block in

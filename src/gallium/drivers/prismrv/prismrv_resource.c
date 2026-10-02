@@ -183,35 +183,19 @@ prismrv_transfer_map(struct pipe_context *pctx,
       return NULL;
 
    /*
-    * CPU-write hazard: if the GPU is still reading this resource from
-    * a previous submit, wait before handing a writable CPU pointer to
-    * the caller.
-    *
-    * The kernel registers an exclusive fence on each BO's dma_resv
-    * during submit.  The userspace side of this contract is: before
-    * writing a BO that may be in-flight, wait for all GPU work that
-    * references it to finish.  We use ctx->batch.prev_fence_fd for
-    * the most recent submit's fence (which the flush path maintains).
-    *
-    * This does not cover the multi-context case perfectly — that
-    * requires implicit sync through the kernel's dma_resv path — but
-    * catches the most common single-context write-after-GPU hazard.
+    * CPU access hazard.  Any CPU read OR write of a resource the GPU may
+    * have written (render target, readback) or may still read (texture,
+    * vertex data being rewritten) needs the GPU to be done: submit what
+    * is still queued in this context, then wait for it.  (The kernel
+    * also does cache maintenance when a job retires, but that only
+    * makes the data visible once the job has finished - it does not
+    * wait for it.)  The wait is per context, not per resource: no
+    * per-resource tracking exists yet, and multi-context sharing has no
+    * export path.  PIPE_MAP_UNSYNCHRONIZED skips it for callers that
+    * know better.
     */
-   if ((usage & PIPE_MAP_WRITE) && ctx->batch.prev_fence_fd >= 0) {
-      struct pollfd pfd = {
-         .fd     = ctx->batch.prev_fence_fd,
-         .events = POLLIN,
-      };
-      int pr = poll(&pfd, 1, 5000);
-      bool gpu_done = (pr > 0) && (pfd.revents & (POLLIN | POLLERR | POLLHUP));
-      if (!gpu_done) {
-         debug_printf("prismrv: transfer_map GPU wait failed "
-                      "(ret=%d revents=%x) — refusing CPU write to avoid race\n",
-                      pr, pfd.revents);
-         return NULL;
-      }
-      /* leave prev_fence_fd open: batch_begin() will close it */
-   }
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
+      prismrv_context_sync(ctx);
 
    if (!res->cpu_map || res->cpu_map == MAP_FAILED) {
       res->cpu_map = prismrv_drm_gem_map(screen->fd, res->gem_handle,

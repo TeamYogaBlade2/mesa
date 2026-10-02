@@ -79,6 +79,11 @@ struct prismrv_sampler_view {
 };
 
 /* fixed-function state (shipped to the executor via SET_* packets) */
+/* sampler state as sent in SET_TEXTURE (Gallium PIPE_TEX_* values) */
+struct prismrv_sampler_state {
+   uint32_t wrap_s, wrap_t, min_img_filter, mag_img_filter, min_mip_filter;
+};
+
 struct prismrv_blend_state {
    bool blend_enable;
    unsigned rgb_func, rgb_src, rgb_dst;
@@ -135,6 +140,7 @@ struct prismrv_context {
    /* pipe_resource refs held for the lifetime of the sampler binding.
     * Released on unbind and on context destroy. */
    struct pipe_resource *textures[8];   /* fragment stage only */
+   struct prismrv_sampler_state samplers[8];
 
    /* set to true when a submit fails; draw_vbo returns immediately until
     * the context is destroyed and re-created */
@@ -162,6 +168,8 @@ prismrv_framebuffer(struct prismrv_context *ctx)
 {
    return &ctx->framebuffer;
 }
+
+void prismrv_context_sync(struct prismrv_context *ctx);
 
 struct pipe_context *
 prismrv_context_create(struct pipe_screen *pscreen, void *priv,

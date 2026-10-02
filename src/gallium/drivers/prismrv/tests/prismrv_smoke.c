@@ -157,6 +157,17 @@ main(void)
    /* flush through the driver: exercises prismrv_context_flush ->
     * batch_submit -> SUBMIT ioctl (the shim answers with a signalled
     * eventfd fence) */
+   /*
+    * Read back WITHOUT glFinish/glFlush: the driver itself must submit the
+    * pending batch and wait for the GPU before the CPU reads the target.
+    * (The shim executes nothing, so the pixels are not checked - only
+    * that the readback path runs to completion and reports no error.)
+    */
+   {
+      unsigned char px[4] = { 0 };
+
+      glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+   }
    glFinish();
 
    {

@@ -27,7 +27,10 @@
  *                      per stage, each stage's uniform 0 is its own r16
  *     5  DRAW          {ta_va lo, ta_va hi, ta_len, first}
  *     6  BARRIER
- *     7  SET_TEXTURE   {slot, w, h, gpu_va, stride_bytes, PRISMRV_FMT_*}
+ *     7  SET_TEXTURE   {slot, w, h, gpu_va, stride_bytes, PRISMRV_FMT_*,
+ *                       wrap_s, wrap_t, min_filter, mag_filter, mip_filter}
+ *                      (sampler state as Gallium PIPE_TEX_* values; the
+ *                       executor may implement only a subset, see README)
  *     8  SET_VIEWPORT  {f32 scale[3], f32 translate[3]}
  *     9  SET_SCISSOR   {enable, minx, miny, maxx, maxy}
  *    10  SET_BLEND     {enable, rgb_func, rgb_src, rgb_dst,
@@ -309,7 +312,7 @@ prismrv_state_words(const struct prismrv_context *ctx)
    if (ctx->fs && ctx->fs->usse_text)
       n += 2 + (ctx->fs->usse_len + 4) / 4;
    n += 2 * (2 + 1) + (ctx->num_vs_constants + ctx->num_fs_constants) * 4;
-   n += 8 * (2 + 6);                    /* textures */
+   n += 8 * (2 + 11);                   /* textures */
    n += (2 + 6) + (2 + 5) + (2 + 8) + (2 + 3) + (2 + 2);
    return n;
 }
@@ -381,13 +384,18 @@ prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
       fmt = prismrv_stream_format(tex->base.format);
       if (fmt < 0)
          continue;
-      out[off++] = OP_SET_TEXTURE; out[off++] = 6;
+      out[off++] = OP_SET_TEXTURE; out[off++] = 11;
       out[off++] = t;
       out[off++] = tex->base.width0;
       out[off++] = tex->base.height0;
       out[off++] = tex->gpu_va;
       out[off++] = tex->base.width0 * util_format_get_blocksize(tex->base.format);
       out[off++] = fmt;
+      out[off++] = ctx->samplers[t].wrap_s;
+      out[off++] = ctx->samplers[t].wrap_t;
+      out[off++] = ctx->samplers[t].min_img_filter;
+      out[off++] = ctx->samplers[t].mag_img_filter;
+      out[off++] = ctx->samplers[t].min_mip_filter;
       prismrv_batch_add_bo(ctx, tex->gem_handle);
    }
 
@@ -862,15 +870,37 @@ prismrv_bind_sampler_states(struct pipe_context *pctx,
                             unsigned start_slot, unsigned num_samplers,
                             void **samplers)
 {
-   /* filter/wrap state has no executor equivalent (smp is nearest and
-    * clamped); sampler CSOs are accepted and ignored */
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   if (shader != MESA_SHADER_FRAGMENT)
+      return;   /* the vertex stage has no samplers (caps) */
+   for (unsigned i = 0; i < num_samplers; i++) {
+      unsigned slot = start_slot + i;
+
+      if (slot >= ARRAY_SIZE(ctx->samplers))
+         break;
+      if (samplers && samplers[i])
+         ctx->samplers[slot] = *(struct prismrv_sampler_state *)samplers[i];
+      else
+         memset(&ctx->samplers[slot], 0, sizeof(ctx->samplers[slot]));
+   }
+   ctx->dirty = PRISMRV_DIRTY_ALL;
 }
 
 static void *
 prismrv_create_sampler_state(struct pipe_context *pctx,
                              const struct pipe_sampler_state *tmpl)
 {
-   return CALLOC(1, sizeof(int));   /* opaque non-NULL cookie */
+   struct prismrv_sampler_state *s = CALLOC_STRUCT(prismrv_sampler_state);
+
+   if (!s)
+      return NULL;
+   s->wrap_s = tmpl->wrap_s;
+   s->wrap_t = tmpl->wrap_t;
+   s->min_img_filter = tmpl->min_img_filter;
+   s->mag_img_filter = tmpl->mag_img_filter;
+   s->min_mip_filter = tmpl->min_mip_filter;
+   return s;
 }
 
 static void
@@ -1098,7 +1128,23 @@ static void
 prismrv_flush_resource(struct pipe_context *pctx,
                        struct pipe_resource *resource)
 {
-   /* nothing is cached on the GPU side that a flush could make visible */
+   /* make pending rendering reach the GPU; completion is observed
+    * through fences / prismrv_context_sync() */
+   prismrv_context_flush(pctx, NULL, 0);
+}
+
+/*
+ * Submit anything pending and wait until the GPU has finished all of this
+ * context's work.  Used before the CPU touches a resource the GPU may have
+ * written or may still read: "GPU cache" coherence (kernel cache
+ * maintenance) says nothing about the job having completed.
+ */
+void
+prismrv_context_sync(struct prismrv_context *ctx)
+{
+   if (ctx->batch.cmd_size)
+      prismrv_context_flush(&ctx->base, NULL, 0);
+   prismrv_batch_wait_prev(ctx);
 }
 
 static void
