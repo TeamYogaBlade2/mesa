@@ -340,13 +340,19 @@ prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
    /* SET_RT: geometry plus the render target BO (written by the job) */
    out[off++] = OP_SET_RT; out[off++] = 5;
    out[off++] = fb->width; out[off++] = fb->height;
-   int rt_fmt = (fb->nr_cbufs && fb->cbufs[0].texture) ?
-      prismrv_stream_format(fb->cbufs[0].texture->format) : -1;
-   if (rt_fmt >= 0) {
-      struct prismrv_resource *rt = to_prismrv_resource(fb->cbufs[0].texture);
+   /*
+    * The attachment is a pipe_surface (a view: mip level, format), not the
+    * bare resource.  Use the level's own address, size and stride.
+    */
+   const struct pipe_surface *cb = fb->nr_cbufs ? &fb->cbufs[0] : NULL;
+   int rt_fmt = (cb && cb->texture) ? prismrv_stream_format(cb->format) : -1;
 
-      out[off++] = rt->gpu_va;
-      out[off++] = rt->base.width0 * util_format_get_blocksize(rt->base.format);
+   if (rt_fmt >= 0) {
+      struct prismrv_resource *rt = to_prismrv_resource(cb->texture);
+      unsigned lw = prismrv_resource_level_dim(rt->base.width0, cb->level);
+
+      out[off++] = prismrv_resource_level_va(rt, cb->level);
+      out[off++] = lw * util_format_get_blocksize(cb->format);
       out[off++] = rt_fmt;
       prismrv_batch_add_bo(ctx, rt->gem_handle);
    } else {
@@ -381,15 +387,19 @@ prismrv_emit_state(struct prismrv_context *ctx, uint32_t *out)
 
       if (!tex)
          continue;
-      fmt = prismrv_stream_format(tex->base.format);
+      unsigned lvl = MIN2(ctx->tex_level[t], (unsigned)tex->base.last_level);
+      unsigned tw = prismrv_resource_level_dim(tex->base.width0, lvl);
+      unsigned th = prismrv_resource_level_dim(tex->base.height0, lvl);
+
+      fmt = prismrv_stream_format(ctx->tex_format[t]);
       if (fmt < 0)
          continue;
       out[off++] = OP_SET_TEXTURE; out[off++] = 11;
       out[off++] = t;
-      out[off++] = tex->base.width0;
-      out[off++] = tex->base.height0;
-      out[off++] = tex->gpu_va;
-      out[off++] = tex->base.width0 * util_format_get_blocksize(tex->base.format);
+      out[off++] = tw;
+      out[off++] = th;
+      out[off++] = prismrv_resource_level_va(tex, lvl);
+      out[off++] = tw * util_format_get_blocksize(ctx->tex_format[t]);
       out[off++] = fmt;
       out[off++] = ctx->samplers[t].wrap_s;
       out[off++] = ctx->samplers[t].wrap_t;
@@ -926,6 +936,13 @@ prismrv_set_sampler_views(struct pipe_context *pctx,
          continue;
       pipe_resource_reference(&ctx->textures[slot],
                               sv ? sv->texture : NULL);
+      if (sv) {
+         /* a texture view = (level, format); both are honoured in the
+          * stream.  Swizzles are lowered into the shader by the state
+          * tracker (caps.texture_swizzle is off); layers do not exist. */
+         ctx->tex_level[slot] = sv->u.tex.first_level;
+         ctx->tex_format[slot] = sv->format;
+      }
    }
 
    if (shader == MESA_SHADER_FRAGMENT) {
@@ -1139,12 +1156,22 @@ prismrv_flush_resource(struct pipe_context *pctx,
  * written or may still read: "GPU cache" coherence (kernel cache
  * maintenance) says nothing about the job having completed.
  */
-void
+bool
 prismrv_context_sync(struct prismrv_context *ctx)
 {
+   if (ctx->context_lost)
+      return false;
    if (ctx->batch.cmd_size)
       prismrv_context_flush(&ctx->base, NULL, 0);
-   prismrv_batch_wait_prev(ctx);
+   if (ctx->context_lost)
+      return false;
+   if (!prismrv_batch_wait_prev(ctx)) {
+      /* the GPU did not finish (timeout / poll error): memory the CPU is
+       * about to touch may still be in use, so give up on the context */
+      ctx->context_lost = true;
+      return false;
+   }
+   return true;
 }
 
 static void
@@ -1174,35 +1201,39 @@ prismrv_get_device_reset_status(struct pipe_context *pctx)
  */
 static void
 prismrv_clear_color_rect(struct prismrv_context *ctx,
-                         struct pipe_resource *pres,
+                         const struct pipe_surface *surf,
                          const union pipe_color_union *color,
                          int x, int y, unsigned w, unsigned h)
 {
+   struct pipe_resource *pres = surf->texture;
    struct prismrv_resource *res = to_prismrv_resource(pres);
-   unsigned bpp = util_format_get_blocksize(pres->format);
+   unsigned level = surf->level;
+   unsigned lw = prismrv_resource_level_dim(pres->width0, level);
+   unsigned lh = prismrv_resource_level_dim(pres->height0, level);
+   unsigned bpp = util_format_get_blocksize(surf->format);
    union util_color uc;
    uint8_t *map;
 
-   if (!res || pres->target != PIPE_TEXTURE_2D || bpp == 0 || bpp > 4)
+   if (!res || pres->target != PIPE_TEXTURE_2D || bpp == 0 || bpp > 4 ||
+       level > pres->last_level)
       return;
    if (x < 0) { w += x; x = 0; }
    if (y < 0) { h += y; y = 0; }
-   if ((unsigned)x >= pres->width0 || (unsigned)y >= pres->height0)
+   if ((unsigned)x >= lw || (unsigned)y >= lh)
       return;
-   w = MIN2(w, pres->width0 - x);
-   h = MIN2(h, pres->height0 - y);
+   w = MIN2(w, lw - x);
+   h = MIN2(h, lh - y);
 
-   if (ctx->batch.cmd_size)
-      prismrv_context_flush(&ctx->base, NULL, 0);
-   if (!prismrv_batch_wait_prev(ctx))
+   if (!prismrv_context_sync(ctx))
       return;
    map = prismrv_resource_map(pres);
    if (!map)
       return;
+   map += res->level_offset[level];
 
-   util_pack_color_union(pres->format, &uc, color);
+   util_pack_color_union(surf->format, &uc, color);
    for (unsigned row = 0; row < h; row++) {
-      uint8_t *p = map + ((size_t)(y + row) * pres->width0 + x) * bpp;
+      uint8_t *p = map + ((size_t)(y + row) * lw + x) * bpp;
 
       for (unsigned col = 0; col < w; col++, p += bpp)
          memcpy(p, &uc, bpp);
@@ -1226,12 +1257,12 @@ prismrv_clear(struct pipe_context *pctx, unsigned buffers,
       return;
 
    if (scissor_state)
-      prismrv_clear_color_rect(ctx, fb->cbufs[0].texture, color,
+      prismrv_clear_color_rect(ctx, &fb->cbufs[0], color,
                                scissor_state->minx, scissor_state->miny,
                                scissor_state->maxx - scissor_state->minx,
                                scissor_state->maxy - scissor_state->miny);
    else
-      prismrv_clear_color_rect(ctx, fb->cbufs[0].texture, color, 0, 0,
+      prismrv_clear_color_rect(ctx, &fb->cbufs[0], color, 0, 0,
                                fb->width, fb->height);
 }
 

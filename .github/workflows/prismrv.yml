@@ -86,11 +86,19 @@ jobs:
     # exact Mesa build produced.  The linux repo may be private: provide a
     # read token as the LINUX_REPO_TOKEN secret (falls back to the
     # default token, which suffices for a public repository).
+    # Pinned: this test checks the Mesa/kernel ABI contract, so the kernel
+    # side must not move underneath a given Mesa commit.  Bump
+    # tests/LINUX_VALIDATOR_REV together with any stream-ABI change.
+    - name: Read the pinned Linux validator revision
+      id: linux_rev
+      run: |
+        echo "sha=$(grep -v '^#' src/gallium/drivers/prismrv/tests/LINUX_VALIDATOR_REV | head -1)" >> "$GITHUB_OUTPUT"
+
     - name: Check out the Linux driver (validator source)
       uses: actions/checkout@v4
       with:
         repository: TeamYogaBlade2/linux
-        ref: dev/v7.1/prismrv-drm
+        ref: ${{ steps.linux_rev.outputs.sha }}
         path: linux-src
         token: ${{ secrets.LINUX_REPO_TOKEN || github.token }}
         sparse-checkout: |
@@ -130,6 +138,8 @@ jobs:
   # Produces a drop-in tarball (gallium_dri.so mega-driver incl. prismrv,
   # libEGL, libglapi) and publishes it to GitHub Releases.
   armhf-release:
+    # building the armhf artifact is useful on PRs too, but publishing a
+    # GitHub Release must only happen for a push to the release branch
     runs-on: ubuntu-22.04
     needs: [meson-build, syntax-only]
     permissions:
@@ -319,6 +329,8 @@ jobs:
         retention-days: 14
 
     - name: Publish to GitHub Releases
+      # never from a pull_request run (it also needs write permission)
+      if: github.event_name == 'push' && github.ref == 'refs/heads/prismrv-oxalpha'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: prismrv-continuous-${{ github.sha }}

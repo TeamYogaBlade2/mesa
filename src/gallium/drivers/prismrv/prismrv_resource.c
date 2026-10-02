@@ -21,13 +21,6 @@
 #include "prismrv_drmif.h"
 #include "util/u_math.h"
 
-/* Dimension of mip @level */
-static inline unsigned
-prismrv_level_dim(unsigned base, unsigned level)
-{
-   return MAX2(base >> level, 1u);
-}
-
 /*
  * Compute the packed mip layout.  Each level is tightly packed
  * (stride = width * bpp) and 64-byte aligned; returns the total size
@@ -42,8 +35,8 @@ prismrv_compute_layout(struct prismrv_resource *res)
 
    for (unsigned l = 0; l <= b->last_level && l < PIPE_MAX_TEXTURE_LEVELS; l++) {
       res->level_offset[l] = (uint32_t)off;
-      off += (uint64_t)prismrv_level_dim(b->width0, l) *
-             prismrv_level_dim(b->height0, l) * bpp;
+      off += (uint64_t)prismrv_resource_level_dim(b->width0, l) *
+             prismrv_resource_level_dim(b->height0, l) * bpp;
       off = align64(off, 64);
    }
    return off;
@@ -194,8 +187,8 @@ prismrv_transfer_map(struct pipe_context *pctx,
     * export path.  PIPE_MAP_UNSYNCHRONIZED skips it for callers that
     * know better.
     */
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
-      prismrv_context_sync(ctx);
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && !prismrv_context_sync(ctx))
+      return NULL;       /* GPU not provably done: no CPU pointer */
 
    if (!res->cpu_map || res->cpu_map == MAP_FAILED) {
       res->cpu_map = prismrv_drm_gem_map(screen->fd, res->gem_handle,
@@ -214,9 +207,9 @@ prismrv_transfer_map(struct pipe_context *pctx,
    pt->box = *box;
    {
       unsigned bpp = util_format_get_blocksize(pres->format);
-      pt->stride = prismrv_level_dim(pres->width0, level) * bpp;
+      pt->stride = prismrv_resource_level_dim(pres->width0, level) * bpp;
    }
-   pt->layer_stride = pt->stride * prismrv_level_dim(pres->height0, level);
+   pt->layer_stride = pt->stride * prismrv_resource_level_dim(pres->height0, level);
 
    *ptransfer = pt;
 

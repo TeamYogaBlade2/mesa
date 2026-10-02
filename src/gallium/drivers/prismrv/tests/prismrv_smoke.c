@@ -170,6 +170,55 @@ main(void)
    }
    glFinish();
 
+   /*
+    * Render-target mip levels: clear level 1 of a 64x64 texture and check
+    * the clear landed in level 1 and not in level 0.  The clear is done by
+    * the driver on the CPU, so this exercises the surface -> (level
+    * offset, stride) mapping and the CPU readback path for real.
+    */
+   {
+      static unsigned char l0[64 * 64 * 4];
+      unsigned char px[4] = { 0 };
+      GLuint tex, fbo0, fbo1;
+      GLenum st;
+
+      memset(l0, 0x11, sizeof(l0));
+      glGenTextures(1, &tex);
+      glBindTexture(GL_TEXTURE_2D, tex);
+      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA,
+                   GL_UNSIGNED_BYTE, l0);
+      glTexImage2D(GL_TEXTURE_2D, 1, GL_RGBA, 32, 32, 0, GL_RGBA,
+                   GL_UNSIGNED_BYTE, NULL);
+      glGenFramebuffers(1, &fbo1);
+      glBindFramebuffer(GL_FRAMEBUFFER, fbo1);
+      glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                             GL_TEXTURE_2D, tex, 1);
+      st = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      if (glGetError() != GL_NO_ERROR || st != GL_FRAMEBUFFER_COMPLETE) {
+         printf("SMOKE: render-to-mip-level not available (0x%x), skipped\n", st);
+      } else {
+         glClearColor(1.f, 0.f, 0.f, 1.f);
+         glClear(GL_COLOR_BUFFER_BIT);
+         glReadPixels(31, 31, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+         if (px[0] != 255 || px[1] != 0 || px[2] != 0) {
+            fprintf(stderr, "FAIL: level-1 clear not visible in level 1 "
+                    "(%u %u %u %u)\n", px[0], px[1], px[2], px[3]);
+            return 1;
+         }
+         glGenFramebuffers(1, &fbo0);
+         glBindFramebuffer(GL_FRAMEBUFFER, fbo0);
+         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                                GL_TEXTURE_2D, tex, 0);
+         glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
+         if (px[0] != 0x11 || px[1] != 0x11) {
+            fprintf(stderr, "FAIL: level-1 clear corrupted level 0 "
+                    "(%02x %02x %02x %02x)\n", px[0], px[1], px[2], px[3]);
+            return 1;
+         }
+         printf("SMOKE: render-to-mip-level OK\n");
+      }
+   }
+
    {
       GLenum err = glGetError();
 

@@ -27,3 +27,19 @@ prismrv_resource_map(struct pipe_resource *pres);
 #endif /* PRISMRV_RESOURCE_H_ */
 /* include prismrv_device.h for struct prismrv_resource definition */
 #include "prismrv_device.h"
+
+#include "util/u_math.h"
+
+/* GPU VA of a mip level of a resource (levels are packed in one BO) */
+static inline uint32_t
+prismrv_resource_level_va(const struct prismrv_resource *res, unsigned level)
+{
+   return res->gpu_va + res->level_offset[level];
+}
+
+/* dimension of mip @level */
+static inline unsigned
+prismrv_resource_level_dim(unsigned base, unsigned level)
+{
+   return MAX2(base >> level, 1u);
+}
