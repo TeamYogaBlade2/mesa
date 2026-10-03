@@ -104,9 +104,17 @@ int main(int argc, char **argv)
          u32 *m = malloc(hdr[1]);
          u32 pn; u32 *d;
 
+         /* does the stream carry any GPU address at all? (a program-only
+          * stream, e.g. from the compiler test, carries none) */
+         int has_addr = 0;
+         { size_t pp = 0; u32 o, nn; const u32 *q;
+           while (prismrv_stream_next(st, words, &pp, &o, &nn, &q))
+              if (o == 5 || o == 7 || (o == 1 && (q[2] || q[3]))) has_addr = 1; }
+
          /* 1. no BOs listed: every address is foreign */
-         CHECK(prismrv_validate_stream(&pv, st, words, list, 0) != 0,
-               "accepted with an empty BO list");
+         if (has_addr)
+            CHECK(prismrv_validate_stream(&pv, st, words, list, 0) != 0,
+                  "accepted with an empty BO list");
          /* 2. truncated */
          CHECK(prismrv_validate_stream(&pv, st, words - 1, list, hdr[2]) != 0,
                "truncated stream accepted");
@@ -116,7 +124,8 @@ int main(int argc, char **argv)
          /* 4. foreign address: move every BO away */
          { struct drm_gem_object saved[16]; memcpy(saved, objs, sizeof(saved));
            for (unsigned i = 0; i < hdr[2]; i++) objs[i].va += 0x01000000u;
-           CHECK(prismrv_validate_stream(&pv, st, words, list, hdr[2]) != 0, "foreign VAs");
+           if (has_addr)
+              CHECK(prismrv_validate_stream(&pv, st, words, list, hdr[2]) != 0, "foreign VAs");
            memcpy(objs, saved, sizeof(saved)); }
          /* 5. state values out of range */
          static const struct { u32 op; unsigned idx; u32 val; const char *w; } bad_state[] = {

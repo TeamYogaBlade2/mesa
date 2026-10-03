@@ -113,6 +113,11 @@ jobs:
         test -s streams.bin
         src/gallium/drivers/prismrv/tests/run_stream_validate.sh \
           "$PWD/linux-src" "$PWD/streams.bin"
+        # every program the compiler emits for ~600 random shaders must
+        # also pass the kernel's shader-text grammar
+        PRISMRV_PROG_DUMP="$PWD/progs.bin" build/src/gallium/drivers/prismrv/prismrv_nir_test
+        src/gallium/drivers/prismrv/tests/run_stream_validate.sh \
+          "$PWD/linux-src" "$PWD/progs.bin"
 
   syntax-only:
     runs-on: ubuntu-22.04

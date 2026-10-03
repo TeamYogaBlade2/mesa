@@ -44,6 +44,8 @@ type_size_bytes(const struct glsl_type *type, bool bindless)
 }
 
 static const nir_shader_compiler_options prismrv_nir_options = {
+   /* the back end has a native multiply-add (vmad) */
+   .float_mul_add32 = nir_float_muladd_support_has_ffma,
    .lower_flrp32 = true,
    .lower_fpow = true,
    .lower_fsat = true,
