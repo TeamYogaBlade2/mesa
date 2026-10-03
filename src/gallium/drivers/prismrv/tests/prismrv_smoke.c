@@ -171,6 +171,35 @@ main(void)
    glFinish();
 
    /*
+    * Scissored clear sanity: a scissor rectangle entirely off to the left
+    * must leave the target alone.  NOTE: this does not reproduce the
+    * unsigned wrap that prismrv_clear_color_rect() used to have - the
+    * state tracker hands the driver an unsigned, already clamped
+    * rectangle, so a negative x never reaches it from GL (verified: this
+    * test also passes against the old code).  The fix is defensive.
+    */
+   {
+      unsigned char before[4] = { 0 }, after[4] = { 0 };
+
+      glDisable(GL_SCISSOR_TEST);
+      glClearColor(0.f, 1.f, 0.f, 1.f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, before);
+      glEnable(GL_SCISSOR_TEST);
+      glScissor(-30, 0, 20, 64);
+      glClearColor(1.f, 0.f, 0.f, 1.f);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glDisable(GL_SCISSOR_TEST);
+      glReadPixels(5, 5, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, after);
+      if (before[1] != 255 || memcmp(before, after, 4)) {
+         fprintf(stderr, "FAIL: off-screen scissored clear changed pixels "
+                 "(%u %u %u -> %u %u %u)\n", before[0], before[1], before[2],
+                 after[0], after[1], after[2]);
+         return 1;
+      }
+   }
+
+   /*
     * Render-target mip levels: clear level 1 of a 64x64 texture and check
     * the clear landed in level 1 and not in level 0.  The clear is done by
     * the driver on the CPU, so this exercises the surface -> (level

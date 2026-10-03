@@ -1217,12 +1217,25 @@ prismrv_clear_color_rect(struct prismrv_context *ctx,
    if (!res || pres->target != PIPE_TEXTURE_2D || bpp == 0 || bpp > 4 ||
        level > pres->last_level)
       return;
-   if (x < 0) { w += x; x = 0; }
-   if (y < 0) { h += y; y = 0; }
-   if ((unsigned)x >= lw || (unsigned)y >= lh)
-      return;
-   w = MIN2(w, lw - x);
-   h = MIN2(h, lh - y);
+   /*
+    * Clip the rectangle to the level.  Do it in signed 64-bit arithmetic:
+    * w/h are unsigned, so "w += x" with a negative x wrapped to a huge
+    * value and a rectangle entirely off to the left/top cleared whole
+    * rows.
+    */
+   {
+      int64_t x0 = MAX2((int64_t)x, (int64_t)0);
+      int64_t y0 = MAX2((int64_t)y, (int64_t)0);
+      int64_t x1 = MIN2((int64_t)x + (int64_t)w, (int64_t)lw);
+      int64_t y1 = MIN2((int64_t)y + (int64_t)h, (int64_t)lh);
+
+      if (x1 <= x0 || y1 <= y0)
+         return;           /* nothing of it is inside the surface */
+      x = (int)x0;
+      y = (int)y0;
+      w = (unsigned)(x1 - x0);
+      h = (unsigned)(y1 - y0);
+   }
 
    if (!prismrv_context_sync(ctx))
       return;

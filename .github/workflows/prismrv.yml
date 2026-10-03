@@ -125,10 +125,10 @@ jobs:
     - uses: actions/checkout@v4
     - name: Syntax check (clang -fsyntax-only)
       run: |
-        sudo apt-get install -y clang
+        sudo apt-get install -y clang libdrm-dev pkg-config
         for f in src/gallium/drivers/prismrv/*.c; do
           echo "checking $f"
-          clang -fsyntax-only -std=c11 \
+          clang -fsyntax-only -std=c11 $(pkg-config --cflags libdrm) \
             -DHAVE_ENDIAN_H -DHAVE_PTHREAD -DHAVE_STRUCT_TIMESPEC \
             -DUTIL_ARCH_LITTLE_ENDIAN=1 -DUTIL_ARCH_BIG_ENDIAN=0 \
             -D_GNU_SOURCE -DNDEBUG \
@@ -142,13 +142,15 @@ jobs:
   # Lenovo Yoga Tablet 8 B8000-F (MT6589, ARMv7 Cortex-A7 + NEON, SGX544 GPU).
   # Produces a drop-in tarball (gallium_dri.so mega-driver incl. prismrv,
   # libEGL, libglapi) and publishes it to GitHub Releases.
-  armhf-release:
-    # building the armhf artifact is useful on PRs too, but publishing a
-    # GitHub Release must only happen for a push to the release branch
+  armhf-build:
+    # Builds the armhf artifact on every push and pull request with a
+    # read-only token.  Publishing is a separate job (armhf-release below)
+    # so that the write permission never exists in a job that runs
+    # pull-request code.
     runs-on: ubuntu-22.04
     needs: [meson-build, syntax-only]
     permissions:
-      contents: write
+      contents: read
     env:
       CROSS_TRIPLET: arm-linux-gnueabihf
     steps:
@@ -326,16 +328,29 @@ jobs:
         tar -C build-arm/stage -cJf "prismrv-mesa-${SHORT_SHA}-armhf.tar.xz" .
         ls -lh prismrv-mesa-*.tar.xz
 
-    - name: Upload artifact (debug convenience)
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: prismrv-mesa-${{ github.sha }}-armhf
         path: prismrv-mesa-*-armhf.tar.xz
         retention-days: 14
+        if-no-files-found: error
+
+  # Publishing needs contents: write, so it lives in its own job that only
+  # exists for a push to the release branch and only handles the finished
+  # artifact (it checks out and builds nothing).
+  armhf-release:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/prismrv-oxalpha'
+    runs-on: ubuntu-22.04
+    needs: [armhf-build]
+    permissions:
+      contents: write
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: prismrv-mesa-${{ github.sha }}-armhf
 
     - name: Publish to GitHub Releases
-      # never from a pull_request run (it also needs write permission)
-      if: github.event_name == 'push' && github.ref == 'refs/heads/prismrv-oxalpha'
       uses: softprops/action-gh-release@v2
       with:
         tag_name: prismrv-continuous-${{ github.sha }}
