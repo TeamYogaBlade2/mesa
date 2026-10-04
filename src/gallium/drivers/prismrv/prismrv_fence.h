@@ -12,6 +12,11 @@ struct prismrv_screen;
 struct prismrv_context;
 
 struct pipe_fence_handle *prismrv_fence_create(int fd);
+
+/* 0 if the sync_file signalled normally, a negative errno if it signalled
+ * with an error (the kernel sets -EIO on jobs killed by a GPU reset), or
+ * -EAGAIN if it has not signalled yet / cannot be queried */
+int prismrv_sync_file_status(int fd);
 void prismrv_fence_screen_init(struct prismrv_screen *screen);
 void prismrv_fence_context_init(struct prismrv_context *ctx);
 

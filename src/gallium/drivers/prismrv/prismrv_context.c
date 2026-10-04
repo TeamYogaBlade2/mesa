@@ -56,6 +56,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <errno.h>
 #include <poll.h>
 
 #include "util/u_blitter.h"
@@ -129,8 +130,19 @@ prismrv_batch_wait_prev(struct prismrv_context *ctx)
                    pfd.revents);
       return false;
    }
-   close(ctx->batch.prev_fence_fd);
-   ctx->batch.prev_fence_fd = -1;
+   {
+      int st = prismrv_sync_file_status(ctx->batch.prev_fence_fd);
+
+      close(ctx->batch.prev_fence_fd);
+      ctx->batch.prev_fence_fd = -1;
+      if (st < 0 && st != -EAGAIN) {
+         /* the job was killed (GPU reset): what it should have written
+          * is not there */
+         debug_printf("prismrv: job finished with error %d\n", st);
+         ctx->screen->device_resets++;
+         return false;
+      }
+   }
    return true;
 }
 
@@ -1188,8 +1200,17 @@ prismrv_memory_barrier(struct pipe_context *pctx, unsigned flags)
 static enum pipe_reset_status
 prismrv_get_device_reset_status(struct pipe_context *pctx)
 {
-   return to_prismrv_context(pctx)->context_lost ?
-      PIPE_GUILTY_CONTEXT_RESET : PIPE_NO_RESET;
+   struct prismrv_context *ctx = to_prismrv_context(pctx);
+
+   if (ctx->context_lost)
+      return PIPE_GUILTY_CONTEXT_RESET;
+   /* a GPU reset killed jobs (ours or, with several contexts, someone
+    * else's): report it once per reset */
+   if (ctx->resets_seen != ctx->screen->device_resets) {
+      ctx->resets_seen = ctx->screen->device_resets;
+      return PIPE_UNKNOWN_CONTEXT_RESET;
+   }
+   return PIPE_NO_RESET;
 }
 
 /* ---- clears ------------------------------------------------------------ */

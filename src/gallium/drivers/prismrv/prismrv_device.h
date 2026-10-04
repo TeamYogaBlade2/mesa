@@ -76,7 +76,8 @@ struct prismrv_screen {
 
    /* cached kernel params */
    uint64_t errata_mask;
-   uint64_t cmd_abi;          /* PRISMRV_PARAM_CMD_ABI */
+   uint64_t cmd_abi;
+   unsigned device_resets;     /* jobs seen finishing with an error */          /* PRISMRV_PARAM_CMD_ABI */
 };
 
 struct prismrv_resource {

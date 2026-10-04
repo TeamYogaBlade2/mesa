@@ -6,6 +6,10 @@ on:
     branches: [prismrv-oxalpha]
     paths:
       - 'src/gallium/drivers/prismrv/**'
+      - 'src/gallium/winsys/prismrv/**'
+      - 'src/gallium/auxiliary/pipe-loader/**'
+      - 'src/gallium/auxiliary/target-helpers/**'
+      - 'src/gallium/targets/**'
       - 'src/gallium/meson.build'
       - 'meson.options'
       - '.github/workflows/prismrv.yml'

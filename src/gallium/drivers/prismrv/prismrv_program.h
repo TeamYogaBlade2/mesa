@@ -19,11 +19,11 @@
  *   r16..r31   uniforms of the stage being run (vec4 i at r[16+4*i]);
  *              VS and FS each have their own block (SET_UNIFORMS carries
  *              a stage word), so both start at r16
- *   r32..r35   FS: the single interpolated varying (rgb + alpha 1.0)
+ *   r32..r35   FS: the single interpolated varying, all four components
  *   r60..r62   constants 0.0 / 1.0 / -1.0 (materialised by the program)
  *   r64..r255  temporaries (linear allocation, no reuse)
  *   o0..o3     VS clip position / FS colour
- *   o4..o6     VS varying (rgb)
+ *   o4..o7     VS varying (rgba): the executor transports four floats
  */
 #define PRISMRV_MAX_VS_ATTRIBS   4
 #define PRISMRV_MAX_UNIFORM_VEC4 4

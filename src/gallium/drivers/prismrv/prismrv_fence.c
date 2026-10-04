@@ -9,7 +9,10 @@
  * it (REVIEW R3 resolution).
  */
 #include <fcntl.h>
+#include <errno.h>
 #include <poll.h>
+#include <sys/ioctl.h>
+#include <linux/sync_file.h>
 #include <unistd.h>
 
 #include "util/os_file.h"
@@ -19,11 +22,27 @@
 #include "prismrv_screen.h"
 #include "prismrv_context.h"
 #include "prismrv_fence.h"
+#include "prismrv_device.h"
 
 struct pipe_fence_handle {
    struct pipe_reference reference;
    int fd;
+   int error;      /* sticky: negative errno from the sync_file status */
 };
+
+int
+prismrv_sync_file_status(int fd)
+{
+   struct sync_file_info info = { 0 };
+
+   /* first call: no fence_info buffer, just the aggregate status
+    * (1 = signalled OK, 0 = active, <0 = error) */
+   if (ioctl(fd, SYNC_IOC_FILE_INFO, &info))
+      return -EAGAIN;
+   if (info.status < 0)
+      return info.status;
+   return info.status == 1 ? 0 : -EAGAIN;
+}
 
 struct pipe_fence_handle *
 prismrv_fence_create(int fd)
@@ -72,7 +91,19 @@ prismrv_fence_finish(struct pipe_screen *pscreen, struct pipe_context *pctx,
    struct pollfd pfd = { .fd = fence->fd, .events = POLLIN };
    int timeout_ms = timeout > (uint64_t)INT32_MAX ? -1
                                                   : (int)(timeout / 1000000);
-   return poll(&pfd, 1, timeout_ms) > 0;
+   if (poll(&pfd, 1, timeout_ms) <= 0)
+      return false;
+   /*
+    * poll() only says "signalled".  A job killed by a GPU reset signals
+    * with -EIO; remember it, so the rendering this fence stands for is not
+    * mistaken for completed work.  The context's reset status reports it.
+    */
+   int st = prismrv_sync_file_status(fence->fd);
+   if (st < 0 && st != -EAGAIN) {
+      fence->error = st;
+      to_prismrv_screen(pscreen)->device_resets++;
+   }
+   return true;
 }
 
 static int

@@ -281,6 +281,13 @@ emit_tex(struct emit_ctx *c, nir_tex_instr *tex)
          return;
       }
    }
+   /* SET_TEXTURE binds one texture and one sampler state per slot, so a
+    * shader that pairs texture N with sampler M cannot be expressed */
+   if (tex->sampler_index != tex->texture_index) {
+      fail(c, "texture %u used with sampler %u (slots must match)",
+           tex->texture_index, tex->sampler_index);
+      return;
+   }
    if (!coord || tex->op != nir_texop_tex ||
        tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
        tex->is_shadow || coord->num_components != 2 ||
@@ -419,10 +426,6 @@ emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
          unsigned ch = comp + i;
 
          if (!(mask & (1u << i)))
-            continue;
-         /* the executor carries 3 varying floats (o4..o6): alpha of a
-          * varying is not transported */
-         if (obase == 4 && c->stage == MESA_SHADER_VERTEX && ch >= 3)
             continue;
          emit(c, "vmov o%u, r%u, swizzle(xxxx)", obase + ch,
               c->def_reg[val->index] + i);

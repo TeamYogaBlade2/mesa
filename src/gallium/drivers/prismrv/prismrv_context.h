@@ -147,6 +147,7 @@ struct prismrv_context {
    /* set to true when a submit fails; draw_vbo returns immediately until
     * the context is destroyed and re-created */
    bool context_lost;
+   unsigned resets_seen;     /* screen->device_resets already reported */
 
    /* vertex elements */
    struct prismrv_vertex_element vertex_elements[PRISMRV_MAX_VERTEX_ELEMENTS];

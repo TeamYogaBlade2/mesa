@@ -308,7 +308,7 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v)
                           .component = c, .write_mask = 1,
                           .io_semantics.location = VARYING_SLOT_POS,
                           .io_semantics.num_slots = 1);
-      for (unsigned c = 0; c < 3; c++)
+      for (unsigned c = 0; c < 4; c++)
          nir_store_output(&b, pool[rnd_n(n)], nir_imm_int(&b, 0), .base = 1,
                           .component = c, .write_mask = 1,
                           .io_semantics.location = VARYING_SLOT_VAR0,
@@ -460,7 +460,7 @@ run_differential(void)
       if (!run(&m, usse)) {
          fail++;
       } else {
-         unsigned nout = stage == MESA_SHADER_VERTEX ? 7 : 4;
+         unsigned nout = stage == MESA_SHADER_VERTEX ? 8 : 4;
 
          for (unsigned k = 0; k < nout; k++) {
             if (isnan(want[k]))
@@ -535,7 +535,7 @@ main(void)
       snprintf(nm, sizeof(nm), "VS o%u", i);
       fail |= expect_near(nm, m.o[i], 2.0f * (1.0f + i));
    }
-   for (unsigned i = 0; i < 3; i++) {   /* varying = o4..o6 */
+   for (unsigned i = 0; i < 4; i++) {   /* varying = o4..o7, alpha included */
       char nm[16];
       snprintf(nm, sizeof(nm), "VS o%u", 4 + i);
       fail |= expect_near(nm, m.o[4 + i], 0.1f * (i + 1));
