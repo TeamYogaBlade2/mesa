@@ -1168,6 +1168,33 @@ prismrv_flush_resource(struct pipe_context *pctx,
  * written or may still read: "GPU cache" coherence (kernel cache
  * maintenance) says nothing about the job having completed.
  */
+/*
+ * Make a CPU access to @res safe: submit what this context still has
+ * queued, then ask the kernel to wait for every job on the BO's
+ * reservation object - from any context or process.  Waiting for this
+ * context's last fence alone says nothing about another context's job.
+ */
+bool
+prismrv_resource_sync(struct prismrv_context *ctx, struct prismrv_resource *res)
+{
+   int err;
+
+   if (ctx->context_lost)
+      return false;
+   if (ctx->batch.cmd_size)
+      prismrv_context_flush(&ctx->base, NULL, 0);
+   if (ctx->context_lost)
+      return false;
+   err = prismrv_drm_gem_wait(ctx->screen->fd, res->gem_handle,
+                              5ull * 1000 * 1000 * 1000);
+   if (err) {
+      debug_printf("prismrv: GEM_WAIT failed (%d)\n", err);
+      ctx->context_lost = true;
+      return false;
+   }
+   return true;
+}
+
 bool
 prismrv_context_sync(struct prismrv_context *ctx)
 {
@@ -1258,7 +1285,7 @@ prismrv_clear_color_rect(struct prismrv_context *ctx,
       h = (unsigned)(y1 - y0);
    }
 
-   if (!prismrv_context_sync(ctx))
+   if (!prismrv_resource_sync(ctx, res))
       return;
    map = prismrv_resource_map(pres);
    if (!map)

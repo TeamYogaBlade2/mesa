@@ -187,7 +187,7 @@ prismrv_transfer_map(struct pipe_context *pctx,
     * export path.  PIPE_MAP_UNSYNCHRONIZED skips it for callers that
     * know better.
     */
-   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && !prismrv_context_sync(ctx))
+   if (!(usage & PIPE_MAP_UNSYNCHRONIZED) && !prismrv_resource_sync(ctx, res))
       return NULL;       /* GPU not provably done: no CPU pointer */
 
    if (!res->cpu_map || res->cpu_map == MAP_FAILED) {

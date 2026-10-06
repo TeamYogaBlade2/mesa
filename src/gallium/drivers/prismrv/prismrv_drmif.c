@@ -43,6 +43,17 @@ prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va)
    return c.handle;
 }
 
+int
+prismrv_drm_gem_wait(int fd, uint32_t handle, uint64_t timeout_ns)
+{
+   struct drm_prismrv_gem_wait w = { .handle = handle,
+                                     .timeout_ns = timeout_ns };
+
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_GEM_WAIT, &w))
+      return -errno;
+   return 0;
+}
+
 void
 prismrv_drm_gem_close(int fd, uint32_t handle)
 {

@@ -213,11 +213,15 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    if (!screen)
       return NULL;
 
-   screen->fd = fcntl(fd, F_DUPFD_CLOEXEC, 3);
-   if (screen->fd < 0) {
-      ralloc_free(screen);
-      return NULL;
-   }
+   /*
+    * Ownership of @fd moves to the screen.  The winsys passes a private
+    * dup() and u_pipe_screen_lookup_or_create() keys its screen cache by
+    * that fd, then removes the entry using pscreen->get_screen_fd() when
+    * the screen dies.  A second dup() here made the two differ: the cache
+    * entry was never removed and the descriptor leaked.  Every failure
+    * path below therefore closes screen->fd (the only owner).
+    */
+   screen->fd = fd;
 
    /*
     * Query the two separate identification registers (UAPI v2).

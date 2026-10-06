@@ -173,6 +173,8 @@ prismrv_framebuffer(struct prismrv_context *ctx)
 }
 
 bool prismrv_context_sync(struct prismrv_context *ctx);
+struct prismrv_resource;
+bool prismrv_resource_sync(struct prismrv_context *ctx, struct prismrv_resource *res);
 
 struct pipe_context *
 prismrv_context_create(struct pipe_screen *pscreen, void *priv,

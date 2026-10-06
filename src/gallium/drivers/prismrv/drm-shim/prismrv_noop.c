@@ -47,6 +47,13 @@ prismrv_ioctl_noop(int fd, unsigned long request, void *arg)
 }
 
 static int
+prismrv_ioctl_gem_wait(int fd, unsigned long request, void *arg)
+{
+   /* the shim "executes" every job at submit time */
+   return 0;
+}
+
+static int
 prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_get_param *gp = arg;
@@ -203,6 +210,7 @@ static ioctl_fn_t driver_ioctls[] = {
    [DRM_PRISMRV_GEM_MMAP_OFFSET]  = prismrv_ioctl_gem_mmap_offset,
    [DRM_PRISMRV_SUBMIT]           = prismrv_ioctl_submit,
    [DRM_PRISMRV_GET_PARAM]        = prismrv_ioctl_get_param,
+   [DRM_PRISMRV_GEM_WAIT]         = prismrv_ioctl_gem_wait,
 };
 
 void

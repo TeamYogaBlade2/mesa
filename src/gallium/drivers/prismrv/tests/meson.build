@@ -19,6 +19,15 @@ libprismrv_smoke = executable(
   build_by_default: false,
 )
 
+libprismrv_fdleak = executable(
+  'prismrv_fdleak',
+  'prismrv_fdleak.c',
+  include_directories: [inc_include, inc_src],
+  dependencies: [dependency('egl'), dependency('glesv2')],
+  link_args: ['-L' + join_paths(meson.current_build_dir(), '../../../egl')],
+  build_by_default: false,
+)
+
 if with_egl
   test('prismrv-smoke', libprismrv_smoke,
     env: [
@@ -70,6 +79,25 @@ if with_egl
       'MESA_DEBUG=1',
     ],
     timeout: 120,
+    suite: ['prismrv'],
+  )
+
+  # a screen's file descriptor used to be dup()ed twice, so the screen cache
+  # never dropped its entry and every display create/destroy leaked one fd
+  test('prismrv-fdleak', libprismrv_fdleak,
+    env: [
+      'LD_PRELOAD=' + libprismrv_noop_drm_shim.full_path(),
+      '__EGL_VENDOR_LIBRARY_FILENAMES=' + meson.project_build_root() /
+         'src/egl/devenv_glvnd_egl.json',
+      'LD_LIBRARY_PATH=' + ':'.join([
+         meson.project_build_root() / 'src/gallium/targets/dri',
+         meson.project_build_root() / 'src/egl',
+         meson.project_build_root() / 'src/gallium/drivers/prismrv/drm-shim',
+      ]),
+      'EGL_PLATFORM=surfaceless',
+      'MESA_LOADER_DRIVER_OVERRIDE=prismrv',
+    ],
+    timeout: 60,
     suite: ['prismrv'],
   )
 endif
