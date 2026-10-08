@@ -19,6 +19,13 @@ libprismrv_smoke = executable(
   build_by_default: false,
 )
 
+prismrv_usse_encode_test = executable(
+  'prismrv_usse_encode_test',
+  ['prismrv_usse_encode_test.c', '../prismrv_usse_encode.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-usse-encode', prismrv_usse_encode_test, suite: ['prismrv'])
+
 libprismrv_fdleak = executable(
   'prismrv_fdleak',
   'prismrv_fdleak.c',

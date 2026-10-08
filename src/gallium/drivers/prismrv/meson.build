@@ -8,6 +8,7 @@ files_prismrv = files(
   'prismrv_drmif.c',
   'prismrv_fence.c',
   'prismrv_program.c',
+  'prismrv_usse_encode.c',
   'prismrv_resource.c',
   'prismrv_screen.c',
 )
