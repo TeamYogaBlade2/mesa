@@ -5,24 +5,24 @@
  * NIR -> native SGX544 USSE words.  See prismrv_usse_nir.h for the ABI
  * assumptions and the scope.
  *
- * Instruction selection (all through the verified plain VMAD,
- * dst = src1 * src2 + src3):
+ * Instruction selection (all forms verified against the vendor disassembler):
  *
- *   fmul a,b      vmad d, a,  b,    -0.0
- *   fadd a,b      vmad d, a,  1.0,  b
- *   fsub a,b      vmad d, a,  1.0, -b           (or  b, -1.0, a)
- *   ffma a,b,c    vmad d, a,  b,    c
- *   fneg a        vmad d, a, -1.0, -0.0
- *   fabs a        vmad d, |a|, 1.0, -0.0
- *   mov/copy a    vmad d, a,  1.0, -0.0
+ *   fadd a,b      vadd d, a, b                 sources: any bank
+ *   fsub a,b      vadd d, -b, a                (negate exists on src1)
+ *   fmul a,b      vmul d, a, b
+ *   fneg a        vadd d, -a, -0.0
+ *   fabs a        vadd d, |a|, -0.0
+ *   mov/copy a    vmov.i32 d, a                bit-exact, any source bank
+ *   ffma a,b,c    vmad d, a, b, c              (src1 = r/pa operand), else
+ *                 vmul t,a,b ; vadd d,t,c      (two roundings, NOT fused)
+ *   store_output  vmov.i32 o, src
  *
  * The addend -0.0 (and not +0.0) keeps the sign of a zero result:
- * (-0) + (-0) = -0 and (+0) + (-0) = +0, so the result of x*y is bit-exact.
+ * (-0) + (-0) = -0 and (+0) + (-0) = +0.
  *
- * Source 1 cannot read the sa bank (verified), so every instruction needs
- * at least one operand in r/pa for that slot; if neither operand is (e.g.
- * fadd of two uniforms) the compile fails until a vmov/vadd form is
- * modelled - it is never "fixed up" with a guess.
+ * Only VMAD still has the "source 1 reads r/pa only" restriction; vadd/vmul
+ * and vmov read r/pa/sa/o freely, so constants and uniforms need no
+ * special handling.
  */
 #include "prismrv_usse_nir.h"
 
@@ -86,28 +86,6 @@ plain(struct loc l)
    return (struct opnd){ .l = l };
 }
 
-static struct opnd
-sa_one(void)
-{
-   return plain(mkloc(PRISMRV_USSE_BANK_SA, PRISMRV_USSE_SA_ONE));
-}
-
-static struct opnd
-sa_one_neg(void)
-{
-   struct opnd o = sa_one();
-   o.neg = true;
-   return o;
-}
-
-static struct opnd
-sa_negzero(void)
-{
-   struct opnd o = plain(mkloc(PRISMRV_USSE_BANK_SA, PRISMRV_USSE_SA_ZERO));
-   o.neg = true;
-   return o;
-}
-
 /* source 1 of a VMAD can only read r and pa (verified) */
 static bool
 src1_ok(struct loc l)
@@ -141,6 +119,66 @@ emit_vmad(struct ctx *c, struct loc dst, struct opnd s1, struct opnd s2,
    }
    if (!prismrv_usse_encode_vmad(&in, &w)) {
       fail(c, "internal: vmad not encodable (dst %u:%u)", dst.bank, dst.reg);
+      return false;
+   }
+   c->out->code[c->out->num_words++] = w;
+   return true;
+}
+
+static bool
+emit_vec2(struct ctx *c, unsigned op, struct loc dst, struct opnd s1,
+          struct opnd s2)
+{
+   struct prismrv_usse_vec2 in = { 0 };
+   struct opnd s[2] = { s1, s2 };
+   uint64_t w;
+
+   if (c->failed)
+      return false;
+   if (c->out->num_words >= PRISMRV_USSE_MAX_WORDS) {
+      fail(c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      return false;
+   }
+   in.op = op;
+   in.dst.bank = dst.bank;
+   in.dst.reg = dst.reg;
+   in.dst.mask = PRISMRV_USSE_MASK_X;
+   for (unsigned i = 0; i < 2; i++) {
+      in.src[i].bank = s[i].l.bank;
+      in.src[i].reg = s[i].l.reg;
+      in.src[i].neg = s[i].neg;
+      in.src[i].abs = s[i].abs;
+      memcpy(in.src[i].swz, "xxxx", 5);
+   }
+   if (!prismrv_usse_encode_vec2(&in, &w)) {
+      fail(c, "internal: vec2 op not encodable (dst %u:%u)", dst.bank, dst.reg);
+      return false;
+   }
+   c->out->code[c->out->num_words++] = w;
+   return true;
+}
+
+static bool
+emit_vmov(struct ctx *c, struct loc dst, struct loc src)
+{
+   struct prismrv_usse_vmov in = { .type = PRISMRV_USSE_MOV_I32, .repeat = 1 };
+   uint64_t w;
+
+   if (c->failed)
+      return false;
+   if (c->out->num_words >= PRISMRV_USSE_MAX_WORDS) {
+      fail(c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      return false;
+   }
+   in.dst.bank = dst.bank;
+   in.dst.reg = dst.reg;
+   in.dst.mask = PRISMRV_USSE_MASK_X;
+   in.src.bank = src.bank;
+   in.src.reg = src.reg;
+   memcpy(in.src.swz, "xxxx", 5);
+   if (!prismrv_usse_encode_vmov(&in, &w)) {
+      fail(c, "internal: vmov not encodable (dst %u:%u src %u:%u)", dst.bank,
+           dst.reg, src.bank, src.reg);
       return false;
    }
    c->out->code[c->out->num_words++] = w;
@@ -242,8 +280,7 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
 
    for (unsigned ch = 0; ch < n && !c->failed; ch++) {
       struct loc a = src_loc(c, alu, 0, ch), b = { 0 }, cc = { 0 };
-      struct loc d;
-      bool ok = true;
+      struct loc d, negzero = { 0 };
 
       if (info->num_inputs > 1)
          b = src_loc(c, alu, 1, ch);
@@ -252,77 +289,55 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
       if (c->failed)
          return;
 
-      switch (alu->op) {
-      case nir_op_mov:
-         ok = src1_ok(a);
-         break;
-      case nir_op_fneg:
-      case nir_op_fabs:
-         ok = src1_ok(a);
-         break;
-      case nir_op_fadd:
-      case nir_op_fsub:
-         ok = src1_ok(a) || src1_ok(b);
-         break;
-      case nir_op_fmul:
-         ok = src1_ok(a) || src1_ok(b);
-         break;
-      case nir_op_ffma:
-         ok = src1_ok(a) || src1_ok(b);
-         break;
-      default:
-         break;
+      if (alu->op == nir_op_fneg || alu->op == nir_op_fabs) {
+         negzero = sa_const(c, 0x80000000u);
+         if (c->failed)
+            return;
       }
-      if (!ok) {
-         fail(c, "'%s' needs an r/pa operand for source 1 but all operands "
-                 "are constants/uniforms (needs the vmov/vadd forms)",
-              info->name);
-         return;
-      }
-
       d = alloc_temp(c);
       if (c->failed)
          return;
 
       switch (alu->op) {
       case nir_op_mov:
-         emit_vmad(c, d, plain(a), sa_one(), sa_negzero());
+         emit_vmov(c, d, a);
          break;
-      case nir_op_fneg:
-         emit_vmad(c, d, plain(a), sa_one_neg(), sa_negzero());
+      case nir_op_fneg: {
+         struct opnd s1 = plain(a);
+         s1.neg = true;
+         emit_vec2(c, PRISMRV_USSE_VADD, d, s1, plain(negzero));
          break;
+      }
       case nir_op_fabs: {
          struct opnd s1 = plain(a);
          s1.abs = true;
-         emit_vmad(c, d, s1, sa_one(), sa_negzero());
+         emit_vec2(c, PRISMRV_USSE_VADD, d, s1, plain(negzero));
          break;
       }
       case nir_op_fadd:
-         if (src1_ok(a))
-            emit_vmad(c, d, plain(a), sa_one(), plain(b));
-         else
-            emit_vmad(c, d, plain(b), sa_one(), plain(a));
+         emit_vec2(c, PRISMRV_USSE_VADD, d, plain(a), plain(b));
          break;
-      case nir_op_fsub:
-         if (src1_ok(a)) {
-            struct opnd s3 = plain(b);
-            s3.neg = true;
-            emit_vmad(c, d, plain(a), sa_one(), s3);     /* a*1 + (-b) */
-         } else {
-            emit_vmad(c, d, plain(b), sa_one_neg(), plain(a)); /* b*-1 + a */
-         }
+      case nir_op_fsub: {
+         struct opnd s1 = plain(b);
+         s1.neg = true;
+         emit_vec2(c, PRISMRV_USSE_VADD, d, s1, plain(a));   /* -b + a */
          break;
+      }
       case nir_op_fmul:
-         if (src1_ok(a))
-            emit_vmad(c, d, plain(a), plain(b), sa_negzero());
-         else
-            emit_vmad(c, d, plain(b), plain(a), sa_negzero());
+         emit_vec2(c, PRISMRV_USSE_VMUL, d, plain(a), plain(b));
          break;
       case nir_op_ffma:
-         if (src1_ok(a))
+         if (src1_ok(a)) {
             emit_vmad(c, d, plain(a), plain(b), plain(cc));
-         else
+         } else if (src1_ok(b)) {
             emit_vmad(c, d, plain(b), plain(a), plain(cc));
+         } else {
+            /* VMAD source 1 cannot read sa/o: unfused mul + add */
+            struct loc t = alloc_temp(c);
+
+            emit_vec2(c, PRISMRV_USSE_VMUL, t, plain(a), plain(b));
+            emit_vec2(c, PRISMRV_USSE_VADD, d, plain(t), plain(cc));
+         }
          break;
       default:
          UNREACHABLE("filtered above");
@@ -446,13 +461,7 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *intr, mesa_shader_stage stage
             fail(c, "output slot %u out of range", slot);
             return;
          }
-         if (!src1_ok(src)) {
-            fail(c, "output stores a constant/uniform directly (needs the "
-                    "vmov form)");
-            return;
-         }
-         emit_vmad(c, mkloc(PRISMRV_USSE_BANK_O, slot), plain(src),
-                   sa_one(), sa_negzero());
+         emit_vmov(c, mkloc(PRISMRV_USSE_BANK_O, slot), src);
       }
       break;
    }
@@ -591,23 +600,59 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
    return !c.failed;
 }
 
-void
-prismrv_usse_disasm_vmad(uint64_t word, char *buf, unsigned size)
+static const char *const bank_name[] = { "r", "o", "pa", "sa", "i" };
+
+static int
+fmt_src(char *buf, unsigned size, const struct prismrv_usse_src *s)
 {
-   static const char *const bank[] = { "r", "o", "pa", "sa", "i" };
+   return snprintf(buf, size, ", %s%s%s%u.%s%s", s->neg ? "-" : "",
+                   s->abs ? "|" : "", bank_name[s->bank], s->reg, s->swz,
+                   s->abs ? "|" : "");
+}
+
+static const char *
+mask_str(unsigned m, char *tmp)
+{
+   unsigned n = 0;
+
+   for (unsigned i = 0; i < 4; i++)
+      if (m & (1u << i))
+         tmp[n++] = "xyzw"[i];
+   tmp[n] = 0;
+   return tmp;
+}
+
+void
+prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
+{
    struct prismrv_usse_vmad v;
+   struct prismrv_usse_vec2 v2;
+   struct prismrv_usse_vmov vm;
+   char mk[8];
    int n;
 
-   if (!prismrv_usse_decode_vmad(word, &v)) {
+   if (prismrv_usse_decode_vmad(word, &v)) {
+      n = snprintf(buf, size, "vmad %s%u.%s%s", bank_name[v.dst.bank], v.dst.reg,
+                   mask_str(v.dst.mask, mk),
+                   v.pred ? (v.pred == PRISMRV_USSE_PRED_P0 ? " (p0)" : " (!p0)") : "");
+      for (unsigned i = 0; i < 3 && n > 0 && (unsigned)n < size; i++)
+         n += fmt_src(buf + n, size - n, &v.src[i]);
+   } else if (prismrv_usse_decode_vec2(word, &v2)) {
+      static const char *const op[] = { "vmul", "vadd", "vmin", "vmax" };
+
+      n = snprintf(buf, size, "%s %s%u.%s", op[v2.op], bank_name[v2.dst.bank],
+                   v2.dst.reg, mask_str(v2.dst.mask, mk));
+      for (unsigned i = 0; i < 2 && n > 0 && (unsigned)n < size; i++)
+         n += fmt_src(buf + n, size - n, &v2.src[i]);
+   } else if (prismrv_usse_decode_vmov(word, &vm)) {
+      static const char *const ty[] = { "i8", "i16", "i32" };
+
+      n = snprintf(buf, size, "vmov.%s%s %s%u.%s", ty[vm.type],
+                   vm.flags & PRISMRV_USSE_FLAG_END ? ".end" : "",
+                   bank_name[vm.dst.bank], vm.dst.reg, mask_str(vm.dst.mask, mk));
+      if (n > 0 && (unsigned)n < size)
+         fmt_src(buf + n, size - n, &vm.src);
+   } else {
       snprintf(buf, size, ".word 0x%016llx", (unsigned long long)word);
-      return;
    }
-   n = snprintf(buf, size, "vmad %s%u.%s%s", bank[v.dst.bank], v.dst.reg,
-                v.dst.mask == 3 ? "xy" : v.dst.mask == 2 ? "y" : "x",
-                v.pred ? (v.pred == PRISMRV_USSE_PRED_P0 ? " (p0)" : " (!p0)")
-                       : "");
-   for (unsigned i = 0; i < 3 && n > 0 && (unsigned)n < size; i++)
-      n += snprintf(buf + n, size - n, ", %s%s%s%u.%s%s", v.src[i].neg ? "-" : "",
-                    v.src[i].abs ? "|" : "", bank[v.src[i].bank], v.src[i].reg,
-                    v.src[i].swz, v.src[i].abs ? "|" : "");
 }

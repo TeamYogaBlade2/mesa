@@ -1007,7 +1007,7 @@ prismrv_create_shader_state(const struct pipe_shader_state *tmpl)
                    state->native->sa_uniform_count,
                    state->native->sa_pool_first, state->native->sa_pool_count);
       for (unsigned i = 0; i < state->native->num_words; i++) {
-         prismrv_usse_disasm_vmad(state->native->code[i], line, sizeof(line));
+         prismrv_usse_disasm(state->native->code[i], line, sizeof(line));
          debug_printf("  %016llx  %s\n",
                       (unsigned long long)state->native->code[i], line);
       }

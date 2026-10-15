@@ -280,10 +280,7 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
    is_sa[n] = true; pool[n++] = nir_imm_float(&b, 3.0f);
 
    for (unsigned i = 0; i < 28 && n < POOL - 2; i++) {
-      /* native mode: operands that must land in an r/pa register for VMAD
-       * source 1 are drawn from the non-constant part of the pool */
-#define REG_PICK() ({ unsigned _k; do { _k = rnd_n(n); } while (is_sa[_k]); _k; })
-      unsigned ia = native ? REG_PICK() : rnd_n(n);
+            unsigned ia = rnd_n(n);
       unsigned ic = rnd_n(n), id = rnd_n(n);
       nir_def *a = pool[ia], *c = pool[ic], *d = pool[id];
       unsigned op = rnd_n(9);
@@ -313,9 +310,7 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
          break;
       }
       default: { /* vec4 of mixed scalars used as a whole by an ALU op */
-         unsigned p3 = native ? REG_PICK() : rnd_n(n);
-         unsigned p4 = native ? REG_PICK() : rnd_n(n);
-         unsigned p5 = native ? REG_PICK() : rnd_n(n);
+         unsigned p3 = rnd_n(n), p4 = rnd_n(n), p5 = rnd_n(n);
          nir_def *v1 = nir_vec4(&b, a, c, d, pool[p3]);
          nir_def *v2 = nir_vec4(&b, pool[p4], a, pool[p5], c);
          nir_def *r = nir_fadd(&b, nir_fmul(&b, v1, v2), v1);
@@ -327,18 +322,18 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
 
    if (stage == MESA_SHADER_VERTEX) {
       for (unsigned c = 0; c < 4; c++)
-         nir_store_output(&b, pool[native ? REG_PICK() : rnd_n(n)], nir_imm_int(&b, 0), .base = 0,
+         nir_store_output(&b, pool[rnd_n(n)], nir_imm_int(&b, 0), .base = 0,
                           .component = c, .write_mask = 1,
                           .io_semantics.location = VARYING_SLOT_POS,
                           .io_semantics.num_slots = 1);
       for (unsigned c = 0; c < 4; c++)
-         nir_store_output(&b, pool[native ? REG_PICK() : rnd_n(n)], nir_imm_int(&b, 0), .base = 1,
+         nir_store_output(&b, pool[rnd_n(n)], nir_imm_int(&b, 0), .base = 1,
                           .component = c, .write_mask = 1,
                           .io_semantics.location = VARYING_SLOT_VAR0,
                           .io_semantics.num_slots = 1);
    } else {
       for (unsigned c = 0; c < 4; c++)
-         nir_store_output(&b, pool[native ? REG_PICK() : rnd_n(n)], nir_imm_int(&b, 0), .base = 0,
+         nir_store_output(&b, pool[rnd_n(n)], nir_imm_int(&b, 0), .base = 0,
                           .component = c, .write_mask = 1,
                           .io_semantics.location = FRAG_RESULT_COLOR,
                           .io_semantics.num_slots = 1);
@@ -532,22 +527,52 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
 {
    for (unsigned i = 0; i < bin->num_words; i++) {
       struct prismrv_usse_vmad v;
+      struct prismrv_usse_vec2 v2;
+      struct prismrv_usse_vmov vm;
+      uint64_t w = bin->code[i];
 
-      if (!prismrv_usse_decode_vmad(bin->code[i], &v)) {
+      if (prismrv_usse_decode_vmad(w, &v)) {
+         for (unsigned k = 0; k < 3; k++)
+            if (memcmp(v.src[k].swz, "xxxx", 5)) {
+               fprintf(stderr, "native interpreter: unexpected swizzle\n");
+               return false;
+            }
+         if (v.dst.mask != PRISMRV_USSE_MASK_X || v.pred || v.flags) {
+            fprintf(stderr, "native interpreter: unexpected vmad dst/flags\n");
+            return false;
+         }
+         m->bank[v.dst.bank][v.dst.reg] =
+            f2u(fmaf(nread(m, &v.src[0]), nread(m, &v.src[1]), nread(m, &v.src[2])));
+      } else if (prismrv_usse_decode_vec2(w, &v2)) {
+         float a, b, r;
+
+         if (memcmp(v2.src[0].swz, "xxxx", 5) || memcmp(v2.src[1].swz, "xxxx", 5) ||
+             v2.dst.mask != PRISMRV_USSE_MASK_X || v2.pred || v2.flags) {
+            fprintf(stderr, "native interpreter: unexpected vec2 form\n");
+            return false;
+         }
+         a = nread(m, &v2.src[0]);
+         b = nread(m, &v2.src[1]);
+         switch (v2.op) {
+         case PRISMRV_USSE_VADD: r = a + b; break;
+         case PRISMRV_USSE_VMUL: r = a * b; break;
+         default:
+            fprintf(stderr, "native interpreter: vmin/vmax not used by the compiler\n");
+            return false;
+         }
+         m->bank[v2.dst.bank][v2.dst.reg] = f2u(r);
+      } else if (prismrv_usse_decode_vmov(w, &vm)) {
+         if (vm.type != PRISMRV_USSE_MOV_I32 || vm.repeat != 1 ||
+             memcmp(vm.src.swz, "xxxx", 5) || vm.dst.mask != PRISMRV_USSE_MASK_X ||
+             vm.pred || (vm.flags & ~PRISMRV_USSE_FLAG_END)) {
+            fprintf(stderr, "native interpreter: unexpected vmov form\n");
+            return false;
+         }
+         m->bank[vm.dst.bank][vm.dst.reg] = m->bank[vm.src.bank][vm.src.reg];
+      } else {
          fprintf(stderr, "native interpreter: word %u not decodable\n", i);
          return false;
       }
-      for (unsigned k = 0; k < 3; k++)
-         if (memcmp(v.src[k].swz, "xxxx", 5)) {
-            fprintf(stderr, "native interpreter: unexpected swizzle\n");
-            return false;
-         }
-      if (v.dst.mask != PRISMRV_USSE_MASK_X || v.pred || v.flags) {
-         fprintf(stderr, "native interpreter: unexpected dst/flags\n");
-         return false;
-      }
-      m->bank[v.dst.bank][v.dst.reg] =
-         f2u(fmaf(nread(m, &v.src[0]), nread(m, &v.src[1]), nread(m, &v.src[2])));
    }
    return true;
 }
@@ -617,7 +642,7 @@ run_native_tests(void)
    }
    printf("---- native VS (%u words) ----\n", bin->num_words);
    for (unsigned i = 0; i < bin->num_words; i++) {
-      prismrv_usse_disasm_vmad(bin->code[i], line, sizeof(line));
+      prismrv_usse_disasm(bin->code[i], line, sizeof(line));
       printf("%016llx  %s\n", (unsigned long long)bin->code[i], line);
    }
    memset(&m, 0, sizeof(m));
@@ -667,10 +692,8 @@ run_native_tests(void)
 
    /* 3. refusals */
    {
-      nir_shader *neg[] = { build_fs_with_if(), build_fs_with_fsin(),
-                            build_fs_store_const(), build_fs_add_uniforms() };
-      static const char *const why[] = { "control flow", "fsin",
-                                         "constant output", "uniform+uniform" };
+      nir_shader *neg[] = { build_fs_with_if(), build_fs_with_fsin() };
+      static const char *const why[] = { "control flow", "fsin" };
 
       for (unsigned i = 0; i < ARRAY_SIZE(neg); i++) {
          if (prismrv_nir_to_usse_native(neg[i], bin)) {
@@ -680,6 +703,32 @@ run_native_tests(void)
          ralloc_free(neg[i]);
       }
    }
+
+   /* 3b. forms that needed constants/moves in the VMAD-only version now
+    *     compile: constant output and uniform+uniform */
+   nir = build_fs_store_const();
+   if (!prismrv_nir_to_usse_native(nir, bin)) {
+      fprintf(stderr, "FAIL: constant output rejected\n");
+      fail++;
+   } else {
+      native_init(&m, bin, MESA_SHADER_FRAGMENT, &(struct fuzz_vals){ 0 });
+      fail |= !run_native(&m, bin);
+      fail |= expect_near("const output", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_COLOR_REG(0)], 1.0f);
+   }
+   ralloc_free(nir);
+   nir = build_fs_add_uniforms();
+   if (!prismrv_nir_to_usse_native(nir, bin)) {
+      fprintf(stderr, "FAIL: uniform+uniform rejected\n");
+      fail++;
+   } else {
+      struct fuzz_vals uv = { 0 };
+
+      uv.uni[0][0] = 1.25f; uv.uni[0][1] = 2.5f;
+      native_init(&m, bin, MESA_SHADER_FRAGMENT, &uv);
+      fail |= !run_native(&m, bin);
+      fail |= expect_near("uniform+uniform", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_COLOR_REG(0)], 3.75f);
+   }
+   ralloc_free(nir);
 
    /* 4. differential: every accepted random shader must match NIR's own
     *    evaluation bit for bit up to float rounding */
@@ -720,7 +769,7 @@ run_native_tests(void)
                        iter, stage == MESA_SHADER_VERTEX ? "VS" : "FS", k,
                        got, want[k]);
                for (unsigned i = 0; i < bin->num_words; i++) {
-                  prismrv_usse_disasm_vmad(bin->code[i], line, sizeof(line));
+                  prismrv_usse_disasm(bin->code[i], line, sizeof(line));
                   fprintf(stderr, "  %s\n", line);
                }
                fail++;
@@ -732,7 +781,7 @@ run_native_tests(void)
    }
    printf("native differential: %d shaders compiled, %d refused, %d output "
           "values compared against NIR\n", accepted, rejected, compared);
-   if (accepted < 300 || compared < 1200) {
+   if (accepted < 550 || compared < 3000) {
       fprintf(stderr, "FAIL: native differential test covered too little\n");
       fail++;
    }

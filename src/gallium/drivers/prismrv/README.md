@@ -41,12 +41,13 @@ export path yet, so only surfaceless/pbuffer rendering is meaningful.
 ## Native USSE back end (work in progress)
 
 `prismrv_usse_nir.[ch]` compiles NIR straight to **native SGX544 USSE
-words** (not text) through the verified plain-VMAD encoder
-(`prismrv_usse_encode.c`).  Every shader is compiled both ways in
+words** (not text) through the verified encoders: plain VMAD
+(`prismrv_usse_encode.c`) and the vmul/vadd/vmin/vmax group + vmov
+(`prismrv_usse_encode_vec.c`).  Every shader is compiled both ways in
 `create_*_state`; the native result is kept in `prismrv_shader_state::native`
 and printed with `PRISMRV_NATIVE_USSE_DUMP=1`.  It is not yet put in the
 command stream (that needs the stock-uKernel program registration and TA kick
-ABI).  Only what the encoder can express compiles (fadd/fsub/fmul/ffma/
+ABI).  Only what the encoders can express compiles (fadd/fsub/fmul/ffma/
 fneg/fabs/mov, I/O, uniforms, literal constants); control flow, texturing,
 rcp/rsq and the rest fail cleanly.  The register ABI assumptions are listed
 in `prismrv_usse_nir.h`; `prismrv_nir_test` checks the output against NIR's

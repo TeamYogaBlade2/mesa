@@ -10,8 +10,9 @@
  * the emulator bring-up path.
  *
  * Instruction selection is limited to what prismrv_usse_encode.c can emit
- * and what has been verified against the vendor disassembler: the plain
- * VMAD.  Everything else (control flow, texturing, rcp/rsq, compares, ...)
+ * and what has been verified against the vendor disassembler: plain VMAD,
+ * the two-source vector group (vmul/vadd/vmin/vmax) and vmov.  Everything
+ * else (control flow, texturing, rcp/rsq, compares, ...)
  * makes the compile FAIL; nothing is approximated.  As further forms are
  * modelled (vadd/vmul/vmov/vrcp/indexed/...), they are added here.
  *
@@ -38,8 +39,10 @@
  *           o[2*(4+c)]; FS colour comp c -> o[2*c]              [UNVERIFIED]
  *
  * Hardware constraints that ARE verified and enforced here: source 1 of a
- * VMAD can only read r/pa; negate exists on sources 2/3 only; swizzles are
- * per-slot presets; write masks are {x, y, xy, all}.
+ * VMAD can only read r/pa (vadd/vmul/vmov read any bank); negate exists on
+ * VMAD sources 2/3 and vadd/vmul source 1 only; swizzles are per-slot
+ * presets (vadd/vmul source 1: free per component); VMAD write masks are
+ * {x, y, xy, all}, vec2/vmov masks are full xyzw bitmasks.
  * ---------------------------------------------------------------------------
  */
 #ifndef PRISMRV_USSE_NIR_H_
@@ -88,8 +91,8 @@ struct prismrv_usse_binary {
 bool prismrv_nir_to_usse_native(nir_shader *nir,
                                 struct prismrv_usse_binary *out);
 
-/* one-line disassembly of a native word (re-decoded through the encoder's
- * decoder, so it only shows what the model understands) */
-void prismrv_usse_disasm_vmad(uint64_t word, char *buf, unsigned size);
+/* one-line disassembly of a native word (re-decoded through the encoders'
+ * decoders: vmad, vec2 group, vmov; anything else prints as .word) */
+void prismrv_usse_disasm(uint64_t word, char *buf, unsigned size);
 
 #endif /* PRISMRV_USSE_NIR_H_ */

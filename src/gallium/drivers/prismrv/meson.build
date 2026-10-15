@@ -9,6 +9,7 @@ files_prismrv = files(
   'prismrv_fence.c',
   'prismrv_program.c',
   'prismrv_usse_encode.c',
+  'prismrv_usse_encode_vec.c',
   'prismrv_usse_nir.c',
   'prismrv_resource.c',
   'prismrv_screen.c',
@@ -52,7 +53,7 @@ if with_tests
   prismrv_nir_test = executable(
     'prismrv_nir_test',
     ['prismrv_test_nir.c', 'prismrv_program.c', 'prismrv_usse_nir.c',
-     'prismrv_usse_encode.c'],
+     'prismrv_usse_encode.c', 'prismrv_usse_encode_vec.c'],
     include_directories : prismrv_includes,
     dependencies : [idep_nir, idep_mesautil],
   )

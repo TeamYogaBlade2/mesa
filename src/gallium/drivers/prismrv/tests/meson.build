@@ -26,6 +26,13 @@ prismrv_usse_encode_test = executable(
 )
 test('prismrv-usse-encode', prismrv_usse_encode_test, suite: ['prismrv'])
 
+prismrv_usse_vec_test = executable(
+  'prismrv_usse_vec_test',
+  ['prismrv_usse_vec_test.c', '../prismrv_usse_encode_vec.c', '../prismrv_usse_encode.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-usse-vec', prismrv_usse_vec_test, suite: ['prismrv'])
+
 libprismrv_fdleak = executable(
   'prismrv_fdleak',
   'prismrv_fdleak.c',
