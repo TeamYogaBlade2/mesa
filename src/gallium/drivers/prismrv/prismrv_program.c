@@ -441,9 +441,10 @@ emit_intrinsic(struct emit_ctx *c, nir_intrinsic_instr *intr)
    }
 }
 
-/* lowering + optimisation so the emitter sees flat, scalar-friendly NIR */
-static bool
-prismrv_lower_and_optimize(nir_shader *nir)
+/* lowering + optimisation so the emitter sees flat, scalar-friendly NIR
+ * (shared with the native USSE back end, see prismrv_usse_nir.c) */
+bool
+prismrv_nir_lower_for_usse(nir_shader *nir)
 {
    bool progress;
 
@@ -531,7 +532,7 @@ prismrv_nir_to_usse_owned(void *memctx, nir_shader *nir)
       return NULL;
    }
 
-   prismrv_lower_and_optimize(nir);
+   prismrv_nir_lower_for_usse(nir);
    impl = nir_shader_get_entrypoint(nir);
 
    /* Control flow is not implemented: refuse anything but a single

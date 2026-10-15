@@ -79,6 +79,7 @@
 #include "prismrv_drmif.h"
 #include "prismrv_resource.h"
 #include "prismrv_program.h"
+#include "prismrv_usse_nir.h"
 
 enum {
    OP_NOP = 0, OP_SET_RT, OP_SET_PROG_VS, OP_SET_PROG_FS, OP_SET_UNIFORMS,
@@ -988,6 +989,29 @@ prismrv_create_shader_state(const struct pipe_shader_state *tmpl)
    state->usse_text = prismrv_nir_to_usse(NULL, nir);
    if (state->usse_text)
       state->usse_len = strlen(state->usse_text);
+
+   /* native USSE: best effort, independent of the V1 text path */
+   state->native = CALLOC_STRUCT(prismrv_usse_binary);
+   if (state->native && !prismrv_nir_to_usse_native(nir, state->native)) {
+      FREE(state->native);
+      state->native = NULL;
+   }
+   if (state->native && debug_get_bool_option("PRISMRV_NATIVE_USSE_DUMP", false)) {
+      char line[160];
+
+      debug_printf("prismrv: native USSE, %s, %u words, %u r, sa uniforms "
+                   "@%u (+%u), pool @%u (+%u)\n",
+                   mesa_shader_stage_name(state->native->stage),
+                   state->native->num_words, state->native->num_r_slots,
+                   state->native->sa_uniform_first,
+                   state->native->sa_uniform_count,
+                   state->native->sa_pool_first, state->native->sa_pool_count);
+      for (unsigned i = 0; i < state->native->num_words; i++) {
+         prismrv_usse_disasm_vmad(state->native->code[i], line, sizeof(line));
+         debug_printf("  %016llx  %s\n",
+                      (unsigned long long)state->native->code[i], line);
+      }
+   }
    ralloc_free(nir);
    return state;
 }
@@ -999,6 +1023,8 @@ prismrv_delete_shader_state(struct pipe_context *pctx, void *state)
 
    if (s && s->usse_text)
       ralloc_free(s->usse_text);
+   if (s)
+      FREE(s->native);
    FREE(s);
 }
 

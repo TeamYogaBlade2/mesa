@@ -67,11 +67,19 @@ struct prismrv_vertex_element_state {
    struct prismrv_vertex_element elements[PRISMRV_MAX_VERTEX_ELEMENTS];
 };
 
+struct prismrv_usse_binary;
+
 /* bound shader state */
 struct prismrv_shader_state {
    char *usse_text;         /* compiled USSE text (ralloc), NULL if the
                              * shader could not be compiled */
    unsigned usse_len;
+   /* native SGX544 USSE words for the same shader (NULL when the verified
+    * instruction forms cannot express it).  Not yet consumed by the command
+    * stream: the V1 text path above is what the emulator/kernel validator
+    * understand; the native binary is for the stock-uKernel path (phase B/C)
+    * and can be dumped with PRISMRV_NATIVE_USSE_DUMP=1. */
+   struct prismrv_usse_binary *native;
 };
 
 struct prismrv_sampler_view {

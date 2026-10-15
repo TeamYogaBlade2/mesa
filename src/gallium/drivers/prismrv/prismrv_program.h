@@ -32,6 +32,12 @@
 const nir_shader_compiler_options *prismrv_get_nir_options(void);
 
 /*
+ * The lowering/optimisation pipeline both back ends (V1 text and native
+ * USSE) run before instruction selection.  Operates in place on @nir.
+ */
+bool prismrv_nir_lower_for_usse(nir_shader *nir);
+
+/*
  * Lower and optimise a private clone of @nir for the backend, then emit
  * USSE text (ralloc'd off @memctx).  @nir itself is not modified.  Returns NULL if the shader uses anything the
  * backend cannot express: unsupported constructs are never silently
