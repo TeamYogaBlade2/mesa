@@ -17,26 +17,33 @@
  * modelled (vadd/vmul/vmov/vrcp/indexed/...), they are added here.
  *
  * ---------------------------------------------------------------------------
- * Native ABI assumptions (see analysis/NATIVE_USSE_COMPILER.md in the
- * prismrv repo; items marked UNVERIFIED have no hardware confirmation yet and
- * are concentrated in the PRISMRV_USSE_*_REG() macros below so they can be
- * corrected in ONE place):
+ * Native ABI: what is known and what is not.  Evidence comes from running
+ * the vendor GLES driver and disassembling the code it generates (prismrv
+ * repo, analysis/NATIVE_USSE_COMPILER.md, "Running the vendor GLES driver").
+ * All of it is concentrated in the PRISMRV_USSE_*_REG() macros / the sa
+ * layout so it can be corrected in one place.
  *
- *   - The encoder's register numbers are even (field * 2).  Every scalar
- *     value therefore occupies the x component of an even register
- *     ("pair" model) and is read with the broadcast swizzle xxxx and written
- *     with dst mask x.                                         [UNVERIFIED]
- *   - r   : temporaries (this compiler allocates r0..r118, even only)
- *   - pa  : shader inputs: VS attribute a, component c -> pa[2*(4a+c)];
- *           FS varying v, component c -> pa[2*(4v+c)]           [UNVERIFIED]
- *   - sa  : constants + uniforms, as 32-bit slots, slot s = sa[2*s]:
- *             slot 0 = 1.0f, slot 1 = 0.0f,
- *             slots 2 .. 2+U-1       = uniforms (byte offset / 4)
- *             slots 2+U ..           = literal pool (deduplicated)
- *           The values of the pool are returned in sa_image[]; uniforms
- *           are written by the driver at draw time.             [UNVERIFIED]
- *   - o   : outputs: VS position comp c -> o[2*c], varying comp c ->
- *           o[2*(4+c)]; FS colour comp c -> o[2*c]              [UNVERIFIED]
+ *   - Register model.  Vendor code uses whole vec4 operands (mask xyzw,
+ *     swizzle xyzw: component i of the vector at register n is register
+ *     n+i) and scalar forms like "pa10.x, pa8.yyyy".  This compiler places
+ *     every scalar in the x component of an even register ("pair model"):
+ *     valid under that model, but it wastes the odd registers.   [WASTEFUL]
+ *   - r   : temporaries, r0..r118 even only.
+ *   - pa  : inputs: VS attribute a / FS varying v, component c ->
+ *           pa[2*(4a+c)]  (vendor: varying v_color is pa0..pa3, dense) [WRONG
+ *           SPACING, same cause as above]
+ *   - sa  : uniforms + literals as 32-bit slots; slot s = sa[2*s]:
+ *             slot 0 = 1.0f, slot 1 = 0.0f, slots 2.. uniforms, then the
+ *           literal pool.  Vendor: uniforms ARE in sa, but the first one is
+ *           sa10 (sa0..sa9 are the driver's) and a mediump vec4 is 4 x f16
+ *           packed in two sa registers.                         [LAYOUT WRONG]
+ *   - o   : VS outputs o[2*c] / o[2*(4+c)]  [UNVERIFIED].  FS colour: the
+ *           vendor packs to RGBA8 with vpcku8f16/f32 into ONE register o0
+ *           (inside a 'phas' phase structure); 4 float outputs, as emitted
+ *           here for the FS, are NOT what an RGBA8 target consumes. [WRONG]
+ *   - Precision.  Vendor mediump FS code is f16 (vf16mad ...), highp FS does
+ *           not compile; this back end is f32 only (right for the VS).
+ *   - No 'end' flag / phase header is emitted.
  *
  * Hardware constraints that ARE verified and enforced here: source 1 of a
  * VMAD can only read r/pa (vadd/vmul/vmov read any bank); negate exists on
