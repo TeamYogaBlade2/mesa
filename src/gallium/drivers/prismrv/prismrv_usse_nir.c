@@ -600,7 +600,7 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
    return !c.failed;
 }
 
-static const char *const bank_name[] = { "r", "o", "pa", "sa", "i" };
+static const char *const bank_name[] = { "r", "o", "pa", "sa", "i", "c", "#" };
 
 static int
 fmt_src(char *buf, unsigned size, const struct prismrv_usse_src *s)

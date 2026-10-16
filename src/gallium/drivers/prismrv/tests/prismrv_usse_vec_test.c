@@ -97,6 +97,16 @@ main(void)
    a = ok2(); a.flags = PRISMRV_USSE_FLAG_END;
    CHECK(!prismrv_usse_encode_vec2(&a, &w), "END flag on vec2 accepted");
    CHECK(!prismrv_usse_decode_vec2(UINT64_C(1) << 48, &a), "indexed vec2 decoded");
+   CHECK(!prismrv_usse_decode_vec2((UINT64_C(1) << 59) | (UINT64_C(1) << 49) |
+                                   (UINT64_C(3) << 30), &a), "r[ih+#n] src1 decoded");
+   a = ok2(); a.src[0].bank = PRISMRV_USSE_BANK_C; a.src[0].reg = 5;
+   a.src[1].bank = PRISMRV_USSE_BANK_IMM; a.src[1].reg = 63;
+   CHECK(prismrv_usse_encode_vec2(&a, &w) && ((w >> 49) & 1) && ((w >> 48) & 1),
+         "c/# sources not encoded with the extended-bank bits");
+   a.src[1].reg = 64;
+   CHECK(!prismrv_usse_encode_vec2(&a, &w), "# register 64 accepted");
+   a = ok2(); a.dst.bank = PRISMRV_USSE_BANK_C;
+   CHECK(!prismrv_usse_encode_vec2(&a, &w), "c as a destination accepted");
    CHECK(!prismrv_usse_decode_vec2((UINT64_C(1) << 59) | (UINT64_C(7) << 56), &a), "Pn decoded");
    CHECK(!prismrv_usse_decode_vec2((UINT64_C(1) << 59) | (UINT64_C(7) << 12), &a), "vdp decoded as vec2");
 

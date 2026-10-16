@@ -25,6 +25,8 @@ enum prismrv_usse_bank {
    PRISMRV_USSE_BANK_PA,   /* primary attributes */
    PRISMRV_USSE_BANK_SA,   /* secondary attributes */
    PRISMRV_USSE_BANK_I,    /* internal registers i0..i3 */
+   PRISMRV_USSE_BANK_C,    /* hardware constants c0..c63 (vec2-group sources only; 1:1 numbering) */
+   PRISMRV_USSE_BANK_IMM,  /* immediate/constant table #0..#63 (vec2-group sources only; 1:1) */
 };
 
 #define PRISMRV_USSE_FLAG_NOSCHED  (1u << 0)

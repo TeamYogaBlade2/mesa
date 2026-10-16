@@ -14,7 +14,8 @@
  *         c0 b15,b16,b17  c1 b18,b19,b20  c2 b21,b34,b35  c3 b50,b53,b54
  *   dst   reg [27:22] bank b32,b33,b51  mask b39..b42 = x y z w
  *   flags nosched b43 syncs b52 skipinv b55; predicate [58:56]
- *   register number = 2 * field; bits 48/49 = indexed sources (rejected)
+ *   register number = 2 * field; b49/b48 = extended banks for src1/src2:
+ *   (o,pa) = 10 c, 01 #imm (numbers 1:1); 00/11 = indexed r[il/ih+#n] (rejected)
  *
  * vmov  opcode [63:59]=00111; register numbers are 1:1
  *   src   reg [11:6]  bank b30,b31  swz [38:35] preset
@@ -102,6 +103,28 @@ src_bank_from_bits(unsigned o, unsigned pa)
             : (pa ? PRISMRV_USSE_BANK_PA : PRISMRV_USSE_BANK_R);
 }
 
+/* vec2-group source bank: (ext, o bit, pa bit).  ext selects the extended
+ * banks c / # (b49 for src1, b48 for src2); the indexed r[il/ih+#n] are not
+ * modelled.  c and # numbers are 1:1, the others doubled. */
+static bool
+vec2_src_bank(unsigned bank, unsigned reg, unsigned *ext, unsigned *o,
+              unsigned *pa, unsigned *field)
+{
+   if (bank == PRISMRV_USSE_BANK_C || bank == PRISMRV_USSE_BANK_IMM) {
+      if (reg > 63)
+         return false;
+      *ext = 1;
+      *o = bank == PRISMRV_USSE_BANK_C;
+      *pa = bank == PRISMRV_USSE_BANK_IMM;
+      *field = reg;
+      return true;
+   }
+   unsigned hw;
+
+   *ext = 0;
+   return reg_field(bank, reg, 2, field, &hw) && src_bank_bits(hw, o, pa);
+}
+
 static bool
 dst_bank_bits(unsigned hw, uint64_t *w)
 {
@@ -147,6 +170,21 @@ pred_from_bits(unsigned bits, bool is_vmov, uint8_t *pred)
    return false;           /* p1/p2/p3/!p1/!p2/Pn: not modelled in the IR */
 }
 
+static bool
+vec2_src_decode(unsigned ext, unsigned o, unsigned pa, unsigned field,
+                struct prismrv_usse_src *s)
+{
+   if (!ext) {
+      field_reg(src_bank_from_bits(o, pa), field, 2, &s->bank, &s->reg);
+      return true;
+   }
+   if (o == pa)
+      return false;               /* r[il+#n] / r[ih+#n]: indexed, not modelled */
+   s->bank = o ? PRISMRV_USSE_BANK_C : PRISMRV_USSE_BANK_IMM;
+   s->reg = field;
+   return true;
+}
+
 bool
 prismrv_usse_encode_vec2(const struct prismrv_usse_vec2 *in, uint64_t *out)
 {
@@ -176,10 +214,12 @@ prismrv_usse_encode_vec2(const struct prismrv_usse_vec2 *in, uint64_t *out)
    {
       const struct prismrv_usse_src *s = &in->src[0];
 
-      if (!reg_field(s->bank, s->reg, 2, &field, &hw) ||
-          !src_bank_bits(hw, &o, &pa) || s->swz[4])
+      unsigned ext;
+
+      if (!vec2_src_bank(s->bank, s->reg, &ext, &o, &pa, &field) || s->swz[4])
          return false;
-      w |= (uint64_t)field << 6 | (uint64_t)o << 30 | (uint64_t)pa << 31;
+      w |= (uint64_t)field << 6 | (uint64_t)o << 30 | (uint64_t)pa << 31 |
+           (uint64_t)ext << 49;
       if (s->neg) w |= BIT64(37);
       if (s->abs) w |= BIT64(38);
       for (unsigned c = 0; c < 4; c++) {
@@ -197,11 +237,13 @@ prismrv_usse_encode_vec2(const struct prismrv_usse_vec2 *in, uint64_t *out)
       const struct prismrv_usse_src *s = &in->src[1];
       int preset = swz16_index(s->swz);
 
-      if (s->neg || preset < 0 || !reg_field(s->bank, s->reg, 2, &field, &hw) ||
-          !src_bank_bits(hw, &o, &pa))
+      unsigned ext;
+
+      if (s->neg || preset < 0 ||
+          !vec2_src_bank(s->bank, s->reg, &ext, &o, &pa, &field))
          return false;
       w |= (uint64_t)field | (uint64_t)o << 28 | (uint64_t)pa << 29 |
-           (uint64_t)preset << 44;
+           (uint64_t)preset << 44 | (uint64_t)ext << 48;
       if (s->abs) w |= BIT64(36);
    }
    *out = w;
@@ -214,7 +256,7 @@ prismrv_usse_decode_vec2(uint64_t w, struct prismrv_usse_vec2 *out)
    struct prismrv_usse_vec2 d;
    unsigned hw;
 
-   if (BITS(w, 63, 59) != 1 || GET(w, 48) || GET(w, 49))
+   if (BITS(w, 63, 59) != 1)
       return false;
    memset(&d, 0, sizeof(d));
    switch (BITS(w, 14, 12)) {
@@ -233,8 +275,9 @@ prismrv_usse_decode_vec2(uint64_t w, struct prismrv_usse_vec2 *out)
    field_reg(hw, BITS(w, 27, 22), 2, &d.dst.bank, &d.dst.reg);
    d.dst.mask = BITS(w, 42, 39);
 
-   field_reg(src_bank_from_bits(GET(w, 30), GET(w, 31)), BITS(w, 11, 6), 2,
-             &d.src[0].bank, &d.src[0].reg);
+   if (!vec2_src_decode(GET(w, 49), GET(w, 30), GET(w, 31), BITS(w, 11, 6),
+                        &d.src[0]))
+      return false;
    d.src[0].neg = GET(w, 37);
    d.src[0].abs = GET(w, 38);
    for (unsigned c = 0; c < 4; c++) {
@@ -244,8 +287,9 @@ prismrv_usse_decode_vec2(uint64_t w, struct prismrv_usse_vec2 *out)
          v |= GET(w, swz1_bits[c][k]) << k;
       d.src[0].swz[c] = swz1_chars[v];
    }
-   field_reg(src_bank_from_bits(GET(w, 28), GET(w, 29)), BITS(w, 5, 0), 2,
-             &d.src[1].bank, &d.src[1].reg);
+   if (!vec2_src_decode(GET(w, 48), GET(w, 28), GET(w, 29), BITS(w, 5, 0),
+                        &d.src[1]))
+      return false;
    d.src[1].abs = GET(w, 36);
    memcpy(d.src[1].swz, swz16[BITS(w, 47, 44)], 5);
    *out = d;
