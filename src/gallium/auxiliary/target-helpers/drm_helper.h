@@ -393,6 +393,27 @@ DRM_DRIVER_DESCRIPTOR(tegra, NULL, 0)
 DRM_DRIVER_DESCRIPTOR_STUB(tegra)
 #endif
 
+#ifdef GALLIUM_PRISMRV
+#include "prismrv/drm/prismrv_drm_public.h"
+
+static struct pipe_screen *
+pipe_prismrv_create_screen(int fd, const struct pipe_screen_config *config)
+{
+   struct pipe_screen *screen;
+
+   screen = prismrv_drm_screen_create(fd, config);
+   return screen ? debug_screen_wrap(screen) : NULL;
+}
+
+const driOptionDescription prismrv_driconf[] = {
+      #include "prismrv/driinfo_prismrv.h"
+};
+DRM_DRIVER_DESCRIPTOR(prismrv, prismrv_driconf, ARRAY_SIZE(prismrv_driconf))
+
+#else
+DRM_DRIVER_DESCRIPTOR_STUB(prismrv)
+#endif
+
 #ifdef GALLIUM_LIMA
 #include "lima/drm/lima_drm_public.h"
 

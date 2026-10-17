@@ -122,6 +122,7 @@ foreach d : [[with_gallium_kmsro, [
                (with_gallium_radeonsi and with_amdgpu_virtio),
                ['virtio_gpu']],
              [with_gallium_lima, ['lima']],
+             [with_gallium_prismrv, ['prismrv']],
              [with_gallium_d3d12, ['d3d12']],
              [with_gallium_zink, ['zink']],
              [with_gallium_asahi, ['asahi']]]
