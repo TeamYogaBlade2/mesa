@@ -476,3 +476,126 @@ prismrv_usse_decode_vpck(uint64_t w, struct prismrv_usse_vpck *out)
    *out = d;
    return true;
 }
+
+/*
+ * vrcp group (opcode 00110): vrcp / vrsq / vlog / vexp, f32 only
+ *   op [42:41]; src reg [13:7] (x2, field 124..127 of bank r = i0..i3), bank
+ *   b30=o b31=pa (b49: c / #, fields < 64), component [36:35], neg b37, abs b38;
+ *   dst reg [27:21] (x2, 124..127 = i0..i3), bank (b32,b33,b51) as vec2,
+ *   mask b0 = x, b1 = y; repeat [47:44] = count-1; nosched b43, end b50,
+ *   syncs b52, skipinv b55; predicate [58:56] (0 none, 1 p0).
+ *   Bits 2-6, 14-20, 28, 29, 34, 48 and the format bits [40:39], b53, b54 are 0.
+ */
+static bool
+vr_reg_field(unsigned bank, unsigned reg, unsigned *field, unsigned *hw)
+{
+   if (bank == PRISMRV_USSE_BANK_I) {
+      if (reg > 3)
+         return false;
+      *field = 124 + reg;
+      *hw = PRISMRV_USSE_BANK_R;
+      return true;
+   }
+   if (reg % 2 || reg / 2 >= (bank == PRISMRV_USSE_BANK_R ? 124u : 128u))
+      return false;
+   *field = reg / 2;
+   *hw = bank;
+   return true;
+}
+
+bool
+prismrv_usse_encode_vrcp(const struct prismrv_usse_vrcp *in, uint64_t *out)
+{
+   uint64_t w = UINT64_C(6) << 59;
+   unsigned field, hw, o, pa, ext = 0;
+
+   if (in->op > PRISMRV_USSE_VEXP || in->repeat < 1 || in->repeat > 16 ||
+       (in->flags & ~15u) || in->src_comp > 3 ||
+       (in->pred != PRISMRV_USSE_PRED_NONE && in->pred != PRISMRV_USSE_PRED_P0))
+      return false;
+   w |= (uint64_t)in->op << 41 | (uint64_t)(in->repeat - 1) << 44 |
+        (uint64_t)in->src_comp << 35;
+   if (in->flags & PRISMRV_USSE_FLAG_NOSCHED) w |= BIT64(43);
+   if (in->flags & PRISMRV_USSE_FLAG_END)     w |= BIT64(50);
+   if (in->flags & PRISMRV_USSE_FLAG_SYNCS)   w |= BIT64(52);
+   if (in->flags & PRISMRV_USSE_FLAG_SKIPINV) w |= BIT64(55);
+   if (in->pred == PRISMRV_USSE_PRED_P0)      w |= BIT64(56);
+   if (in->src.neg) w |= BIT64(37);
+   if (in->src.abs) w |= BIT64(38);
+
+   if (!in->dst.mask || in->dst.mask > PRISMRV_USSE_MASK_XY ||
+       in->dst.bank == PRISMRV_USSE_BANK_C || in->dst.bank == PRISMRV_USSE_BANK_IMM ||
+       !vr_reg_field(in->dst.bank, in->dst.reg, &field, &hw) ||
+       !dst_bank_bits(hw, &w))
+      return false;
+   w |= (uint64_t)field << 21 | (uint64_t)in->dst.mask;
+
+   if (in->src.bank == PRISMRV_USSE_BANK_C || in->src.bank == PRISMRV_USSE_BANK_IMM) {
+      if (in->src.reg > 63)
+         return false;
+      ext = 1;
+      o = in->src.bank == PRISMRV_USSE_BANK_C;
+      pa = in->src.bank == PRISMRV_USSE_BANK_IMM;
+      field = in->src.reg;
+   } else if (!vr_reg_field(in->src.bank, in->src.reg, &field, &hw) ||
+              !src_bank_bits(hw, &o, &pa)) {
+      return false;
+   }
+   w |= (uint64_t)field << 7 | (uint64_t)o << 30 | (uint64_t)pa << 31 |
+        (uint64_t)ext << 49;
+   *out = w;
+   return true;
+}
+
+bool
+prismrv_usse_decode_vrcp(uint64_t w, struct prismrv_usse_vrcp *out)
+{
+   static const uint64_t must_be_zero =
+      (UINT64_C(0x1f) << 2) | (UINT64_C(0x7f) << 14) | BIT64(28) | BIT64(29) |
+      BIT64(34) | BIT64(48) | (UINT64_C(3) << 39) | BIT64(53) | BIT64(54);
+   struct prismrv_usse_vrcp d;
+   unsigned hw, p = BITS(w, 58, 56), f;
+
+   if (BITS(w, 63, 59) != 6 || (w & must_be_zero) || p > 1 ||
+       !dst_bank_from_bits(w, &hw))
+      return false;
+   memset(&d, 0, sizeof(d));
+   d.op = BITS(w, 42, 41);
+   d.repeat = BITS(w, 47, 44) + 1;
+   d.pred = p ? PRISMRV_USSE_PRED_P0 : PRISMRV_USSE_PRED_NONE;
+   d.flags = (GET(w, 43) ? PRISMRV_USSE_FLAG_NOSCHED : 0) |
+             (GET(w, 50) ? PRISMRV_USSE_FLAG_END : 0) |
+             (GET(w, 52) ? PRISMRV_USSE_FLAG_SYNCS : 0) |
+             (GET(w, 55) ? PRISMRV_USSE_FLAG_SKIPINV : 0);
+   f = BITS(w, 27, 21);
+   if (hw == PRISMRV_USSE_BANK_R && f >= 124) {
+      d.dst.bank = PRISMRV_USSE_BANK_I;
+      d.dst.reg = f - 124;
+   } else {
+      d.dst.bank = hw;
+      d.dst.reg = 2 * f;
+   }
+   d.dst.mask = BITS(w, 1, 0);
+   f = BITS(w, 13, 7);
+   if (GET(w, 49)) {
+      if (GET(w, 30) == GET(w, 31) || f >= 64)
+         return false;               /* il/ih indexed, or the g bank */
+      d.src.bank = GET(w, 30) ? PRISMRV_USSE_BANK_C : PRISMRV_USSE_BANK_IMM;
+      d.src.reg = f;
+   } else {
+      unsigned sb = src_bank_from_bits(GET(w, 30), GET(w, 31));
+
+      if (sb == PRISMRV_USSE_BANK_R && f >= 124) {
+         d.src.bank = PRISMRV_USSE_BANK_I;
+         d.src.reg = f - 124;
+      } else {
+         d.src.bank = sb;
+         d.src.reg = 2 * f;
+      }
+   }
+   d.src.neg = GET(w, 37);
+   d.src.abs = GET(w, 38);
+   d.src_comp = BITS(w, 36, 35);
+   *out = d;
+   return true;
+}

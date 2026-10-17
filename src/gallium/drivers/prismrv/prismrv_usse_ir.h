@@ -45,6 +45,7 @@ enum prismrv_usse_pred {
 #define PRISMRV_USSE_MASK_Z  (1u << 2)   /* vec2 group / vmov only */
 #define PRISMRV_USSE_MASK_W  (1u << 3)
 #define PRISMRV_USSE_MASK_XYZW 0xfu
+#define PRISMRV_USSE_MASK_XY   0x3u
 
 struct prismrv_usse_dst {
    uint8_t bank;     /* enum prismrv_usse_bank */
@@ -132,6 +133,24 @@ struct prismrv_usse_vpck {
    struct prismrv_usse_dst dst;
    struct prismrv_usse_src src;     /* swz: any 4 chars of xyzw */
    struct prismrv_usse_src src2;    /* f32 only: bank + reg (swz/neg/abs unused) */
+};
+
+/*
+ * vrcp group: scalar special functions (opcode 00110), f32 only.  Register
+ * numbers are doubled (even); the destination mask is X, Y or XY and the
+ * source component (0..3) selects a lane of the source vector.
+ */
+enum prismrv_usse_vrcp_op { PRISMRV_USSE_VRCP, PRISMRV_USSE_VRSQ,
+                            PRISMRV_USSE_VLOG, PRISMRV_USSE_VEXP };
+
+struct prismrv_usse_vrcp {
+   uint8_t op;               /* enum prismrv_usse_vrcp_op */
+   uint8_t repeat;           /* 1..16 */
+   uint8_t flags;            /* NOSCHED | SYNCS | SKIPINV | END */
+   uint8_t pred;             /* NONE | P0 */
+   struct prismrv_usse_dst dst;
+   struct prismrv_usse_src src;     /* neg/abs allowed; swz unused */
+   uint8_t src_comp;         /* 0..3 */
 };
 
 #endif /* PRISMRV_USSE_IR_H_ */

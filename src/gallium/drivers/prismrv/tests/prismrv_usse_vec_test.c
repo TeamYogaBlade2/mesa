@@ -29,6 +29,12 @@ static const struct gp goldenp[] = {
 #include "prismrv_usse_vpck_golden.inc"
 };
 
+struct gr { uint8_t op, repeat, flags, pred; struct prismrv_usse_dst dst;
+            struct prismrv_usse_src src; uint8_t comp; uint64_t word; };
+static const struct gr goldenr[] = {
+#include "prismrv_usse_vrcp_golden.inc"
+};
+
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fprintf(stderr, "FAIL: " __VA_ARGS__); fprintf(stderr, "\n"); fails++; } } while (0)
 
@@ -100,6 +106,23 @@ main(void)
              (back.src2.bank == in.src2.bank && back.src2.reg == in.src2.reg)),
             "vpck vector %u: decode mismatch", k);
    }
+   for (unsigned k = 0; k < sizeof(goldenr) / sizeof(goldenr[0]); k++) {
+      const struct gr *g = &goldenr[k];
+      struct prismrv_usse_vrcp in = { .op = g->op, .repeat = g->repeat, .flags = g->flags,
+                                      .pred = g->pred, .dst = g->dst, .src = g->src,
+                                      .src_comp = g->comp }, back;
+
+      w = 0;
+      CHECK(prismrv_usse_encode_vrcp(&in, &w), "vrcp vector %u not encodable", k);
+      CHECK(w == g->word, "vrcp vector %u: %016llx != %016llx", k,
+            (unsigned long long)w, (unsigned long long)g->word);
+      CHECK(prismrv_usse_decode_vrcp(g->word, &back) && back.op == in.op &&
+            back.repeat == in.repeat && back.flags == in.flags && back.pred == in.pred &&
+            !memcmp(&back.dst, &in.dst, sizeof(in.dst)) && back.src.bank == in.src.bank &&
+            back.src.reg == in.src.reg && back.src.neg == in.src.neg &&
+            back.src.abs == in.src.abs && back.src_comp == in.src_comp,
+            "vrcp vector %u: decode mismatch", k);
+   }
    printf("checked %zu vec2 + %zu vmov golden vectors\n",
           sizeof(golden2) / sizeof(golden2[0]), sizeof(goldenm) / sizeof(goldenm[0]));
 
@@ -160,6 +183,22 @@ main(void)
       CHECK(!prismrv_usse_encode_vpck(&p, &w), "vpck dst register 128 accepted");
       p.dst.reg = 0; p.src.swz[0] = 'q';
       CHECK(!prismrv_usse_encode_vpck(&p, &w), "bad vpck swizzle accepted");
+   }
+   {
+      struct prismrv_usse_vrcp r = { .op = PRISMRV_USSE_VRCP, .repeat = 1,
+                                     .dst = { PRISMRV_USSE_BANK_R, 4, PRISMRV_USSE_MASK_X },
+                                     .src = { PRISMRV_USSE_BANK_R, 6 } };
+      CHECK(prismrv_usse_encode_vrcp(&r, &w), "plain vrcp not encodable");
+      r.src.reg = 5;
+      CHECK(!prismrv_usse_encode_vrcp(&r, &w), "odd vrcp source accepted");
+      r.src.reg = 6; r.src_comp = 4;
+      CHECK(!prismrv_usse_encode_vrcp(&r, &w), "component 4 accepted");
+      r.src_comp = 0; r.dst.mask = PRISMRV_USSE_MASK_Z;
+      CHECK(!prismrv_usse_encode_vrcp(&r, &w), "vrcp mask z accepted");
+      r.dst.mask = PRISMRV_USSE_MASK_X; r.src.bank = PRISMRV_USSE_BANK_C; r.src.reg = 64;
+      CHECK(!prismrv_usse_encode_vrcp(&r, &w), "c64 (bank g) accepted");
+      r.src.bank = PRISMRV_USSE_BANK_R; r.src.reg = 6; r.repeat = 17;
+      CHECK(!prismrv_usse_encode_vrcp(&r, &w), "repeat 17 accepted");
    }
    if (fails)
       return 1;
