@@ -570,7 +570,7 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
       unsigned d, k;
 
       if (w == PRISMRV_USSE_PHAS_END_PIXEL || w == PRISMRV_USSE_PHAS_PIXEL ||
-          w == PRISMRV_USSE_NOP_END) {
+          w == PRISMRV_USSE_NOP_END || w == PRISMRV_USSE_EMITVTX_END) {
          continue;
       } else if (prismrv_usse_decode_vmad(w, &v)) {
          if (v.pred || v.flags || !dst_lane(&v.dst, &d) ||
@@ -749,6 +749,11 @@ run_native_tests(void)
       return 1;
    }
    print_native(bin, "native VS");
+   if (bin->code[0] != PRISMRV_USSE_PHAS_PIXEL ||
+       bin->code[bin->num_words - 1] != PRISMRV_USSE_EMITVTX_END) {
+      fprintf(stderr, "FAIL: native VS is not wrapped in phas/emitvtx.end\n");
+      fail++;
+   }
    native_sa_init(&m, bin);
    for (unsigned i = 0; i < 4; i++) {
       m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(0, i)] = f2u(1.0f + i);

@@ -42,7 +42,9 @@
  *           vendor's single-phase pixel program.
  *   - Precision.  Vendor mediump FS code is f16 (vf16mad ...), highp FS does
  *           not compile; this back end is f32 only (right for the VS).
- *   - VS: no phas / emitvtx.end wrapper is emitted yet.
+ *   - VS: wrapped as phas, code, emitvtx.end.freep (as in the vendor's vertex
+ *     program, whose preceding phase that defaults attribute w to 1.0 is NOT
+ *     emitted: it depends on the attribute format, i.e. on driver state).
  *
  * Hardware constraints that ARE verified and enforced here: source 1 of a
  * VMAD can only read r/pa (vadd/vmul/vmov read any bank); negate exists on
@@ -74,6 +76,7 @@
 #define PRISMRV_USSE_PHAS_END_PIXEL    UINT64_C(0xfa4c070000000000) /* phas.end #0, #0, pixel, end, parallel */
 #define PRISMRV_USSE_PHAS_PIXEL        UINT64_C(0xfa44070000000000) /* phas #0, #0, pixel, end, parallel */
 #define PRISMRV_USSE_NOP_END           UINT64_C(0xf804014000000000) /* nop.end */
+#define PRISMRV_USSE_EMITVTX_END       UINT64_C(0xfb275000a0200000) /* emitvtx.end.freep #0, #0: ends a vertex program */
 
 struct prismrv_usse_binary {
    mesa_shader_stage stage;

@@ -619,6 +619,8 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
    if (nir->info.stage == MESA_SHADER_FRAGMENT) {
       out->code[out->num_words++] = PRISMRV_USSE_PHAS_END_PIXEL;
       out->code[out->num_words++] = PRISMRV_USSE_PHAS_PIXEL;
+   } else {
+      out->code[out->num_words++] = PRISMRV_USSE_PHAS_PIXEL;
    }
 
    nir_foreach_block(block, impl) {
@@ -665,6 +667,12 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
 
    if (!c.failed && nir->info.stage == MESA_SHADER_FRAGMENT)
       emit_fs_epilogue(&c);
+   else if (!c.failed) {
+      if (out->num_words + 1 > PRISMRV_USSE_MAX_WORDS)
+         fail(&c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      else
+         out->code[out->num_words++] = PRISMRV_USSE_EMITVTX_END;
+   }
 
    out->num_r_slots = c.next_r;
    out->sa_pool_count = c.pool_next - out->sa_pool_first;
@@ -724,6 +732,8 @@ prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
       snprintf(buf, size, "phas #0, #0, pixel, end, parallel");
    } else if (word == PRISMRV_USSE_NOP_END) {
       snprintf(buf, size, "nop.end");
+   } else if (word == PRISMRV_USSE_EMITVTX_END) {
+      snprintf(buf, size, "emitvtx.end.freep #0, #0");
    } else if (prismrv_usse_decode_vpck(word, &pk)) {
       n = snprintf(buf, size, "vpcku8f%s%s.scale %s%u.%s",
                    pk.src_fmt == PRISMRV_USSE_PCK_F32 ? "32" : "16",
