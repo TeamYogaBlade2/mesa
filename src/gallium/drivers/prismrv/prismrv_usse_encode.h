@@ -31,6 +31,9 @@ bool prismrv_usse_decode_vec2(uint64_t word, struct prismrv_usse_vec2 *out);
 bool prismrv_usse_encode_vmov(const struct prismrv_usse_vmov *in, uint64_t *out);
 bool prismrv_usse_decode_vmov(uint64_t word, struct prismrv_usse_vmov *out);
 
+bool prismrv_usse_encode_vpck(const struct prismrv_usse_vpck *in, uint64_t *out);
+bool prismrv_usse_decode_vpck(uint64_t word, struct prismrv_usse_vpck *out);
+
 /* index (0..7) of @swz among source slot @slot's (1..3) presets, or -1 */
 int prismrv_usse_swizzle_preset(unsigned slot, const char swz[4]);
 

@@ -363,3 +363,116 @@ prismrv_usse_decode_vmov(uint64_t w, struct prismrv_usse_vmov *out)
    *out = d;
    return true;
 }
+
+/*
+ * vpck (opcode 01000), verified scope: dst u8 <- src f16/f32, .scale, repeat 1
+ *   src  reg [13:8] (x2), bank b30=o b31=pa (b49: c / #)
+ *   src swizzle, 2 bits per char (0 x 1 y 2 z 3 w):
+ *        c0 (b0,b1) [f16] or (b0,b7) [f32]; c1 (b16,b17); c2 (b14,b15); c3 (b19,b20)
+ *   src2 (f32 only) reg [6:1] (x2), bank b28=o b29=pa (b48: c / #)
+ *   dst  reg [27:21] (7 bits, 1:1), bank (b32,b33,b51) as vec2, mask b34..b37
+ *   fmt  dst b38..b40 = 0 (u8), src b41..b43 = 5 (f16) / 6 (f32), scale b18
+ *   flags end b50, syncs b52, nosched b54, skipinv b55; predicate [58:56]
+ *   (0 none, 1 p0).  Bits 2-7, 28, 29, 48 are zero in the f16 form (the f32
+ *   form uses them for src2); b53 and [47:44] are zero.
+ */
+static const uint8_t vpck_swz_lo[4] = { 0, 16, 14, 19 };
+
+bool
+prismrv_usse_encode_vpck(const struct prismrv_usse_vpck *in, uint64_t *out)
+{
+   uint64_t w = (UINT64_C(8) << 59) | BIT64(18);
+   unsigned field, o, pa, ext;
+   bool f32 = in->src_fmt == PRISMRV_USSE_PCK_F32;
+
+   if ((in->src_fmt != PRISMRV_USSE_PCK_F16 && !f32) || (in->flags & ~15u) ||
+       (in->pred != PRISMRV_USSE_PRED_NONE && in->pred != PRISMRV_USSE_PRED_P0))
+      return false;
+   w |= (uint64_t)in->src_fmt << 41;
+   if (in->flags & PRISMRV_USSE_FLAG_NOSCHED) w |= BIT64(54);
+   if (in->flags & PRISMRV_USSE_FLAG_END)     w |= BIT64(50);
+   if (in->flags & PRISMRV_USSE_FLAG_SYNCS)   w |= BIT64(52);
+   if (in->flags & PRISMRV_USSE_FLAG_SKIPINV) w |= BIT64(55);
+   if (in->pred == PRISMRV_USSE_PRED_P0)      w |= BIT64(56);
+
+   if (!in->dst.mask || in->dst.mask > PRISMRV_USSE_MASK_XYZW ||
+       in->dst.bank == PRISMRV_USSE_BANK_I || in->dst.bank == PRISMRV_USSE_BANK_C ||
+       in->dst.bank == PRISMRV_USSE_BANK_IMM || in->dst.reg > 127 ||
+       (in->dst.bank == PRISMRV_USSE_BANK_R && in->dst.reg >= 60) ||
+       !dst_bank_bits(in->dst.bank, &w))
+      return false;
+   w |= (uint64_t)in->dst.reg << 21 | (uint64_t)in->dst.mask << 34;
+
+   if (in->src.neg || in->src.abs ||
+       !vec2_src_bank(in->src.bank, in->src.reg, &ext, &o, &pa, &field))
+      return false;
+   w |= (uint64_t)field << 8 | (uint64_t)o << 30 | (uint64_t)pa << 31 |
+        (uint64_t)ext << 49;
+   for (unsigned c = 0; c < 4; c++) {
+      const char *p = memchr("xyzw", in->src.swz[c], 4);
+      unsigned v;
+
+      if (!p || !in->src.swz[c])
+         return false;
+      v = p - "xyzw";
+      if (f32 && c == 0)
+         w |= (uint64_t)(v & 1) | (uint64_t)(v >> 1) << 7;
+      else
+         w |= (uint64_t)v << vpck_swz_lo[c];
+   }
+   if (in->src.swz[4])
+      return false;
+   if (f32) {
+      if (in->src2.neg || in->src2.abs ||
+          !vec2_src_bank(in->src2.bank, in->src2.reg, &ext, &o, &pa, &field))
+         return false;
+      w |= (uint64_t)field << 1 | (uint64_t)o << 28 | (uint64_t)pa << 29 |
+           (uint64_t)ext << 48;
+   }
+   *out = w;
+   return true;
+}
+
+bool
+prismrv_usse_decode_vpck(uint64_t w, struct prismrv_usse_vpck *out)
+{
+   struct prismrv_usse_vpck d;
+   unsigned hw, p;
+   bool f32;
+
+   if (BITS(w, 63, 59) != 8 || !GET(w, 18) || GET(w, 53) || BITS(w, 47, 44) ||
+       BITS(w, 40, 38) != 0)
+      return false;
+   f32 = BITS(w, 43, 41) == 6;
+   if (BITS(w, 43, 41) != 5 && !f32)
+      return false;
+   if (!f32 && (w & ((UINT64_C(0x3f) << 2) | BIT64(28) | BIT64(29) | BIT64(48))))
+      return false;
+   p = BITS(w, 58, 56);
+   if (p > 1 || !dst_bank_from_bits(w, &hw) ||
+       (hw == PRISMRV_USSE_BANK_R && BITS(w, 27, 21) >= 60))
+      return false;
+   memset(&d, 0, sizeof(d));
+   d.src_fmt = f32 ? PRISMRV_USSE_PCK_F32 : PRISMRV_USSE_PCK_F16;
+   d.pred = p ? PRISMRV_USSE_PRED_P0 : PRISMRV_USSE_PRED_NONE;
+   d.flags = (GET(w, 54) ? PRISMRV_USSE_FLAG_NOSCHED : 0) |
+             (GET(w, 50) ? PRISMRV_USSE_FLAG_END : 0) |
+             (GET(w, 52) ? PRISMRV_USSE_FLAG_SYNCS : 0) |
+             (GET(w, 55) ? PRISMRV_USSE_FLAG_SKIPINV : 0);
+   d.dst.bank = hw;
+   d.dst.reg = BITS(w, 27, 21);
+   d.dst.mask = BITS(w, 37, 34);
+   if (!vec2_src_decode(GET(w, 49), GET(w, 30), GET(w, 31), BITS(w, 13, 8), &d.src))
+      return false;
+   for (unsigned c = 0; c < 4; c++) {
+      unsigned v = (f32 && c == 0) ? (GET(w, 0) | GET(w, 7) << 1)
+                                   : BITS(w, vpck_swz_lo[c] + 1, vpck_swz_lo[c]);
+
+      d.src.swz[c] = "xyzw"[v];
+   }
+   if (f32 && !vec2_src_decode(GET(w, 48), GET(w, 28), GET(w, 29), BITS(w, 6, 1),
+                               &d.src2))
+      return false;
+   *out = d;
+   return true;
+}

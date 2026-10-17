@@ -23,6 +23,12 @@ static const struct gm goldenm[] = {
 #include "prismrv_usse_vmov_golden.inc"
 };
 
+struct gp { uint8_t src_fmt, flags, pred; struct prismrv_usse_dst dst;
+            struct prismrv_usse_src src, src2; uint64_t word; };
+static const struct gp goldenp[] = {
+#include "prismrv_usse_vpck_golden.inc"
+};
+
 static int fails;
 #define CHECK(c, ...) do { if (!(c)) { fprintf(stderr, "FAIL: " __VA_ARGS__); fprintf(stderr, "\n"); fails++; } } while (0)
 
@@ -75,6 +81,25 @@ main(void)
       CHECK(prismrv_usse_decode_vmov(g->word, &back) &&
             !memcmp(&back, &in, sizeof(in)), "vmov vector %u: decode mismatch", k);
    }
+   for (unsigned k = 0; k < sizeof(goldenp) / sizeof(goldenp[0]); k++) {
+      const struct gp *g = &goldenp[k];
+      struct prismrv_usse_vpck in = { .src_fmt = g->src_fmt, .flags = g->flags,
+                                      .pred = g->pred, .dst = g->dst,
+                                      .src = g->src, .src2 = g->src2 }, back;
+
+      w = 0;
+      CHECK(prismrv_usse_encode_vpck(&in, &w), "vpck vector %u not encodable", k);
+      CHECK(w == g->word, "vpck vector %u: %016llx != %016llx", k,
+            (unsigned long long)w, (unsigned long long)g->word);
+      CHECK(prismrv_usse_decode_vpck(g->word, &back), "vpck vector %u: not decodable", k);
+      CHECK(back.src_fmt == in.src_fmt && back.flags == in.flags && back.pred == in.pred &&
+            !memcmp(&back.dst, &in.dst, sizeof(in.dst)) &&
+            back.src.bank == in.src.bank && back.src.reg == in.src.reg &&
+            !strcmp(back.src.swz, in.src.swz) &&
+            (in.src_fmt != PRISMRV_USSE_PCK_F32 ||
+             (back.src2.bank == in.src2.bank && back.src2.reg == in.src2.reg)),
+            "vpck vector %u: decode mismatch", k);
+   }
    printf("checked %zu vec2 + %zu vmov golden vectors\n",
           sizeof(golden2) / sizeof(golden2[0]), sizeof(goldenm) / sizeof(goldenm[0]));
 
@@ -121,6 +146,21 @@ main(void)
    CHECK(!prismrv_usse_decode_vmov(UINT64_C(7) << 59 | (UINT64_C(5) << 40), &m), "vmov.flt decoded");
    CHECK(!prismrv_usse_decode_vmov(UINT64_C(7) << 59 | 1, &m), "vmov with reserved bit decoded");
 
+   {
+      struct prismrv_usse_vpck p = { .src_fmt = PRISMRV_USSE_PCK_F32,
+                                     .dst = { PRISMRV_USSE_BANK_O, 0, PRISMRV_USSE_MASK_XYZW },
+                                     .src = { PRISMRV_USSE_BANK_R, 4, 0, 0, "xyzw" },
+                                     .src2 = { PRISMRV_USSE_BANK_R, 6 } };
+      CHECK(prismrv_usse_encode_vpck(&p, &w), "plain vpcku8f32 not encodable");
+      p.src.reg = 3;
+      CHECK(!prismrv_usse_encode_vpck(&p, &w), "odd vpck source register accepted");
+      p.src.reg = 4; p.src_fmt = 3;
+      CHECK(!prismrv_usse_encode_vpck(&p, &w), "u16 vpck source accepted");
+      p.src_fmt = PRISMRV_USSE_PCK_F32; p.dst.reg = 128;
+      CHECK(!prismrv_usse_encode_vpck(&p, &w), "vpck dst register 128 accepted");
+      p.dst.reg = 0; p.src.swz[0] = 'q';
+      CHECK(!prismrv_usse_encode_vpck(&p, &w), "bad vpck swizzle accepted");
+   }
    if (fails)
       return 1;
    printf("PRISMRV USSE VEC TEST PASS\n");

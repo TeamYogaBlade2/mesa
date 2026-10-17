@@ -116,4 +116,22 @@ struct prismrv_usse_vmov {
    struct prismrv_usse_src src;     /* swz: one of 16 presets; no neg/abs */
 };
 
+/*
+ * vpck: pack/convert a vector.  Only the verified scope is representable:
+ * dst u8 <- src f16 or f32, .scale, repeat 1.  An f32 source takes a second
+ * source operand (src2: bank/reg only).  Registers: src doubled (even), dst
+ * 1:1.  dst mask is a full xyzw bitmask.  The data layout of a pack (which
+ * source supplies which component) is NOT verified, only the encoding.
+ */
+enum prismrv_usse_pck_fmt { PRISMRV_USSE_PCK_F16 = 5, PRISMRV_USSE_PCK_F32 = 6 };
+
+struct prismrv_usse_vpck {
+   uint8_t src_fmt;          /* PRISMRV_USSE_PCK_F16 / _F32 (dst is always u8) */
+   uint8_t flags;            /* NOSCHED | SYNCS | SKIPINV | END */
+   uint8_t pred;             /* NONE | P0 (p1/p3 not representable) */
+   struct prismrv_usse_dst dst;
+   struct prismrv_usse_src src;     /* swz: any 4 chars of xyzw */
+   struct prismrv_usse_src src2;    /* f32 only: bank + reg (swz/neg/abs unused) */
+};
+
 #endif /* PRISMRV_USSE_IR_H_ */
