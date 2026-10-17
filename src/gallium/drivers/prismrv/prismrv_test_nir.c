@@ -285,8 +285,6 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
       nir_def *a = pool[ia], *c = pool[ic], *d = pool[id];
       unsigned op = rnd_n(9);
 
-      if (native && (op == 5 || op == 6))
-         op = 9;                      /* frcp/frsq: no native form yet */
       switch (op) {
       case 9:
          pool[n++] = nir_fabs(&b, a);
@@ -566,6 +564,7 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
       struct prismrv_usse_vec2 v2;
       struct prismrv_usse_vmov vm;
       struct prismrv_usse_vpck pk;
+      struct prismrv_usse_vrcp vr;
       uint64_t w = bin->code[i];
       unsigned d, k;
 
@@ -580,6 +579,23 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
          }
          m->bank[v.dst.bank][d] =
             f2u(fmaf(nread(m, &v.src[0]), nread(m, &v.src[1]), nread(m, &v.src[2])));
+      } else if (prismrv_usse_decode_vrcp(w, &vr)) {
+         unsigned sreg = vr.src.reg + vr.src_comp;
+         float a, r;
+
+         if (vr.pred || vr.flags || vr.repeat != 1 || !dst_lane(&vr.dst, &d) ||
+             vr.src.neg || vr.src.abs || vr.src.bank > PRISMRV_USSE_BANK_SA) {
+            fprintf(stderr, "native interpreter: unexpected vrcp form\n");
+            return false;
+         }
+         a = u2f(m->bank[vr.src.bank][sreg]);
+         switch (vr.op) {
+         case PRISMRV_USSE_VRCP: r = 1.0f / a; break;
+         case PRISMRV_USSE_VRSQ: r = 1.0f / sqrtf(a); break;
+         case PRISMRV_USSE_VLOG: r = log2f(a); break;
+         default:                r = exp2f(a); break;
+         }
+         m->bank[vr.dst.bank][d] = f2u(r);
       } else if (prismrv_usse_decode_vec2(w, &v2)) {
          float a, b, r;
 
@@ -721,6 +737,26 @@ build_fs_missing_component(void)
    return b.shader;
 }
 
+/* VS exercising the special-function group: rcp, rsq, log2, exp2 */
+static nir_shader *
+build_vs_special(void)
+{
+   static const nir_shader_compiler_options opts = { 0 };
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &opts, "prismrv-test-special");
+   nir_def *a = nir_load_input(&b, 4, 32, nir_imm_int(&b, 0), .base = 0, .component = 0,
+                               .dest_type = nir_type_float32,
+                               .io_semantics.location = VERT_ATTRIB_GENERIC0,
+                               .io_semantics.num_slots = 1);
+   nir_def *r[4] = { nir_frcp(&b, nir_channel(&b, a, 0)), nir_frsq(&b, nir_channel(&b, a, 1)),
+                     nir_flog2(&b, nir_channel(&b, a, 2)), nir_fexp2(&b, nir_channel(&b, a, 3)) };
+
+   for (unsigned c = 0; c < 4; c++)
+      nir_store_output(&b, r[c], nir_imm_int(&b, 0), .base = 0, .component = c, .write_mask = 1,
+                       .src_type = nir_type_float32, .io_semantics.location = VARYING_SLOT_POS,
+                       .io_semantics.num_slots = 1);
+   return b.shader;
+}
+
 static void
 print_native(const struct prismrv_usse_binary *bin, const char *title)
 {
@@ -770,6 +806,27 @@ run_native_tests(void)
       snprintf(nm, sizeof(nm), "native VS var%u", i);
       fail |= expect_near(nm, m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_VARY_REG(i)],
                           0.1f * (i + 1));
+   }
+   ralloc_free(nir);
+
+   /* 1b. special functions: rcp, rsq, log2, exp2 */
+   nir = build_vs_special();
+   if (!prismrv_nir_to_usse_native(nir, bin)) {
+      fprintf(stderr, "FAIL: native special-function VS rejected\n");
+      return 1;
+   }
+   print_native(bin, "native VS (special functions)");
+   native_sa_init(&m, bin);
+   {
+      static const float in[4] = { 4.0f, 16.0f, 8.0f, 3.0f };
+      static const float want[4] = { 0.25f, 0.25f, 3.0f, 8.0f };
+
+      for (unsigned i = 0; i < 4; i++)
+         m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(0, i)] = f2u(in[i]);
+      if (!run_native(&m, bin))
+         return 1;
+      for (unsigned i = 0; i < 4; i++)
+         fail |= expect_near("native special", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_POS_REG(i)], want[i]);
    }
    ralloc_free(nir);
 

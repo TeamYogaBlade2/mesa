@@ -16,6 +16,8 @@
  *   ffma a,b,c    vmad d, a, b, c              (src1 = r/pa operand), else
  *                 vmul t,a,b ; vadd d,t,c      (two roundings, NOT fused)
  *   store_output  vmov.i32 o, src
+ *   frcp/frsq/flog2/fexp2   vrcp/vrsq/vlog/vexp d, a      (f32; the vendor's
+ *                 lowering turns fdiv/fsqrt/fpow into these)
  *
  * The addend -0.0 (and not +0.0) keeps the sign of a zero result:
  * (-0) + (-0) = -0 and (+0) + (-0) = +0.
@@ -196,6 +198,33 @@ emit_vmov(struct ctx *c, struct loc dst, struct loc src)
    return true;
 }
 
+static bool
+emit_vrcp(struct ctx *c, unsigned op, struct loc dst, struct loc src)
+{
+   struct prismrv_usse_vrcp in = { .op = op, .repeat = 1 };
+   uint64_t w;
+
+   if (c->failed)
+      return false;
+   if (c->out->num_words >= PRISMRV_USSE_MAX_WORDS) {
+      fail(c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      return false;
+   }
+   in.dst.bank = dst.bank;
+   in.dst.reg = loc_base(dst);
+   in.dst.mask = loc_comp(dst) ? PRISMRV_USSE_MASK_Y : PRISMRV_USSE_MASK_X;
+   in.src.bank = src.bank;
+   in.src.reg = loc_base(src);
+   in.src_comp = loc_comp(src);
+   if (!prismrv_usse_encode_vrcp(&in, &w)) {
+      fail(c, "internal: vrcp not encodable (dst %u:%u src %u:%u)", dst.bank,
+           dst.reg, src.bank, src.reg);
+      return false;
+   }
+   c->out->code[c->out->num_words++] = w;
+   return true;
+}
+
 static struct loc
 alloc_temp(struct ctx *c)
 {
@@ -291,6 +320,10 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
    case nir_op_fsub:
    case nir_op_fmul:
    case nir_op_ffma:
+   case nir_op_frcp:
+   case nir_op_frsq:
+   case nir_op_flog2:
+   case nir_op_fexp2:
       break;
    default:
       fail(c, "unsupported NIR ALU op '%s' (no verified USSE form yet)",
@@ -321,6 +354,18 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
       switch (alu->op) {
       case nir_op_mov:
          emit_vmov(c, d, a);
+         break;
+      case nir_op_frcp:
+         emit_vrcp(c, PRISMRV_USSE_VRCP, d, a);
+         break;
+      case nir_op_frsq:
+         emit_vrcp(c, PRISMRV_USSE_VRSQ, d, a);
+         break;
+      case nir_op_flog2:
+         emit_vrcp(c, PRISMRV_USSE_VLOG, d, a);
+         break;
+      case nir_op_fexp2:
+         emit_vrcp(c, PRISMRV_USSE_VEXP, d, a);
          break;
       case nir_op_fneg: {
          struct opnd s1 = plain(a);
@@ -710,6 +755,7 @@ prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
    struct prismrv_usse_vec2 v2;
    struct prismrv_usse_vmov vm;
    struct prismrv_usse_vpck pk;
+   struct prismrv_usse_vrcp vr;
    char mk[8];
    int n;
 
@@ -743,6 +789,14 @@ prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
          n += fmt_src(buf + n, size - n, &pk.src);
       if (pk.src_fmt == PRISMRV_USSE_PCK_F32 && n > 0 && (unsigned)n < size)
          snprintf(buf + n, size - n, ", %s%u", bank_name[pk.src2.bank], pk.src2.reg);
+   } else if (prismrv_usse_decode_vrcp(word, &vr)) {
+      static const char *const op[] = { "vrcp", "vrsq", "vlog", "vexp" };
+
+      n = snprintf(buf, size, "%s %s%u.%s, %s%s%s%u.%u%s", op[vr.op],
+                   bank_name[vr.dst.bank], vr.dst.reg, mask_str(vr.dst.mask, mk),
+                   vr.src.neg ? "-" : "", vr.src.abs ? "|" : "",
+                   bank_name[vr.src.bank], vr.src.reg, vr.src_comp,
+                   vr.src.abs ? "|" : "");
    } else if (prismrv_usse_decode_vmov(word, &vm)) {
       static const char *const ty[] = { "i8", "i16", "i32" };
 
