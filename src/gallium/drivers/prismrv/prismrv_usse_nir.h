@@ -23,27 +23,26 @@
  * All of it is concentrated in the PRISMRV_USSE_*_REG() macros / the sa
  * layout so it can be corrected in one place.
  *
- *   - Register model.  Vendor code uses whole vec4 operands (mask xyzw,
- *     swizzle xyzw: component i of the vector at register n is register
- *     n+i) and scalar forms like "pa10.x, pa8.yyyy".  This compiler places
- *     every scalar in the x component of an even register ("pair model"):
- *     valid under that model, but it wastes the odd registers.   [WASTEFUL]
+ *   - Register model (dense).  Vendor code uses whole vec4 operands (mask
+ *     xyzw, swizzle xyzw: component i of the vector at register n is
+ *     register n+i) and scalar forms like "pa10.x, pa8.yyyy".  A scalar in
+ *     register k is therefore emitted as component (k&1) of the pair at
+ *     register (k&~1); vmov addresses registers 1:1.             [UNVERIFIED
+ *     semantics, consistent with all vendor code seen]
  *   - r   : temporaries, r0..r118 even only.
- *   - pa  : inputs: VS attribute a / FS varying v, component c ->
- *           pa[2*(4a+c)]  (vendor: varying v_color is pa0..pa3, dense) [WRONG
- *           SPACING, same cause as above]
- *   - sa  : uniforms + literals as 32-bit slots; slot s = sa[2*s]:
- *             slot 0 = 1.0f, slot 1 = 0.0f, slots 2.. uniforms, then the
- *           literal pool.  Vendor: uniforms ARE in sa, but the first one is
- *           sa10 (sa0..sa9 are the driver's) and a mediump vec4 is 4 x f16
- *           packed in two sa registers.                         [LAYOUT WRONG]
- *   - o   : VS outputs o[2*c] / o[2*(4+c)]  [UNVERIFIED].  FS colour: the
- *           vendor packs to RGBA8 with vpcku8f16/f32 into ONE register o0
- *           (inside a 'phas' phase structure); 4 float outputs, as emitted
- *           here for the FS, are NOT what an RGBA8 target consumes. [WRONG]
+ *   - pa  : inputs: VS attribute a / FS varying v, component c -> pa[4a+c]
+ *           (vendor: varying v_color is pa0..pa3)
+ *   - sa  : uniforms from sa10 (sa0..sa9 belong to the driver), one 32-bit
+ *           register each, then a deduplicated literal pool.  Vendor mediump
+ *           code uses 4 x f16 packed in two sa registers instead (f32 here).
+ *   - o   : VS outputs o[c] / o[4+c]  [UNVERIFIED].  FS colour: packed to
+ *           RGBA8 into o0 with vpcku8f32 (src1 = x,y regs, src2 = z,w regs:
+ *           the split is an ASSUMPTION, only the encoding is verified),
+ *           wrapped in the two phas words and a trailing nop.end like the
+ *           vendor's single-phase pixel program.
  *   - Precision.  Vendor mediump FS code is f16 (vf16mad ...), highp FS does
  *           not compile; this back end is f32 only (right for the VS).
- *   - No 'end' flag / phase header is emitted.
+ *   - VS: no phas / emitvtx.end wrapper is emitted yet.
  *
  * Hardware constraints that ARE verified and enforced here: source 1 of a
  * VMAD can only read r/pa (vadd/vmul/vmov read any bank); negate exists on
@@ -61,18 +60,20 @@
 #include "compiler/nir/nir.h"
 
 #define PRISMRV_USSE_MAX_WORDS     512
-#define PRISMRV_USSE_SA_SLOTS      64    /* sa[0..126], even registers */
-#define PRISMRV_USSE_R_SLOTS       60    /* r0..r118, even; 120+ = i0..i3 */
-#define PRISMRV_USSE_SA_ONE        0
-#define PRISMRV_USSE_SA_ZERO       1
-#define PRISMRV_USSE_SA_UNIFORM0   2
+#define PRISMRV_USSE_SA_SLOTS      64    /* sa0..sa63: vmov addresses 1:1 up to 63 */
+#define PRISMRV_USSE_R_SLOTS       60    /* r0..r59: vmov's r field ends at 59 */
+#define PRISMRV_USSE_SA_UNIFORM0   10    /* vendor code: first uniform at sa10 */
 
-/* register number of scalar slot @s (the encoder wants even numbers) */
-#define PRISMRV_USSE_SLOT_REG(s)       (2u * (s))
-#define PRISMRV_USSE_PA_REG(vec4, c)   PRISMRV_USSE_SLOT_REG(4u * (vec4) + (c))
-#define PRISMRV_USSE_O_POS_REG(c)      PRISMRV_USSE_SLOT_REG(c)
-#define PRISMRV_USSE_O_VARY_REG(c)     PRISMRV_USSE_SLOT_REG(4u + (c))
-#define PRISMRV_USSE_O_COLOR_REG(c)    PRISMRV_USSE_SLOT_REG(c)
+/* scalar register numbers (dense model, see the ABI notes above) */
+#define PRISMRV_USSE_PA_REG(vec4, c)   (4u * (vec4) + (c))
+#define PRISMRV_USSE_O_POS_REG(c)      (c)
+#define PRISMRV_USSE_O_VARY_REG(c)     (4u + (c))
+
+/* instruction words the FS program is wrapped in (single-phase pixel
+ * program, as the vendor driver emits it); see prismrv_usse_nir.c */
+#define PRISMRV_USSE_PHAS_END_PIXEL    UINT64_C(0xfa4c070000000000) /* phas.end #0, #0, pixel, end, parallel */
+#define PRISMRV_USSE_PHAS_PIXEL        UINT64_C(0xfa44070000000000) /* phas #0, #0, pixel, end, parallel */
+#define PRISMRV_USSE_NOP_END           UINT64_C(0xf804014000000000) /* nop.end */
 
 struct prismrv_usse_binary {
    mesa_shader_stage stage;

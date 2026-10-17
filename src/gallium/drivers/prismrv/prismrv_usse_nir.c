@@ -37,11 +37,22 @@
 #include "prismrv_program.h"
 #include "prismrv_usse_encode.h"
 
+/*
+ * Dense register model: a scalar value lives in register `reg` of its bank.
+ * The vector instruction groups address registers in pairs (field * 2) and
+ * select the component inside the pair with the write mask / swizzle, so a
+ * scalar in register k is component (k & 1) of the pair at register (k & ~1).
+ * vmov addresses registers 1:1.  (UNVERIFIED but consistent with all the
+ * vendor code seen; see the header.)
+ */
 struct loc {
    uint8_t bank;     /* enum prismrv_usse_bank */
-   uint8_t reg;      /* even register number */
+   uint8_t reg;      /* scalar register number */
    bool valid;
 };
+
+static unsigned loc_base(struct loc l) { return l.reg & ~1u; }
+static unsigned loc_comp(struct loc l) { return l.reg & 1u; }
 
 struct opnd {
    struct loc l;
@@ -50,6 +61,7 @@ struct opnd {
 
 struct ctx {
    struct prismrv_usse_binary *out;
+   struct loc color[4];       /* FS colour components, packed at the end */
    struct loc *locs;          /* [def index * 4 + component] */
    unsigned num_defs;
    unsigned next_r;           /* next free temporary slot */
@@ -74,10 +86,9 @@ fail(struct ctx *c, const char *fmt, ...)
 }
 
 static struct loc
-mkloc(unsigned bank, unsigned slot)
+mkloc(unsigned bank, unsigned reg)
 {
-   return (struct loc){ .bank = bank, .reg = PRISMRV_USSE_SLOT_REG(slot),
-                        .valid = true };
+   return (struct loc){ .bank = bank, .reg = reg, .valid = true };
 }
 
 static struct opnd
@@ -108,14 +119,14 @@ emit_vmad(struct ctx *c, struct loc dst, struct opnd s1, struct opnd s2,
       return false;
    }
    in.dst.bank = dst.bank;
-   in.dst.reg = dst.reg;
-   in.dst.mask = PRISMRV_USSE_MASK_X;
+   in.dst.reg = loc_base(dst);
+   in.dst.mask = loc_comp(dst) ? PRISMRV_USSE_MASK_Y : PRISMRV_USSE_MASK_X;
    for (unsigned i = 0; i < 3; i++) {
       in.src[i].bank = s[i].l.bank;
-      in.src[i].reg = s[i].l.reg;
+      in.src[i].reg = loc_base(s[i].l);
       in.src[i].neg = s[i].neg;
       in.src[i].abs = s[i].abs;
-      memcpy(in.src[i].swz, "xxxx", 5);
+      memcpy(in.src[i].swz, loc_comp(s[i].l) ? "yyyy" : "xxxx", 5);
    }
    if (!prismrv_usse_encode_vmad(&in, &w)) {
       fail(c, "internal: vmad not encodable (dst %u:%u)", dst.bank, dst.reg);
@@ -141,14 +152,14 @@ emit_vec2(struct ctx *c, unsigned op, struct loc dst, struct opnd s1,
    }
    in.op = op;
    in.dst.bank = dst.bank;
-   in.dst.reg = dst.reg;
-   in.dst.mask = PRISMRV_USSE_MASK_X;
+   in.dst.reg = loc_base(dst);
+   in.dst.mask = loc_comp(dst) ? PRISMRV_USSE_MASK_Y : PRISMRV_USSE_MASK_X;
    for (unsigned i = 0; i < 2; i++) {
       in.src[i].bank = s[i].l.bank;
-      in.src[i].reg = s[i].l.reg;
+      in.src[i].reg = loc_base(s[i].l);
       in.src[i].neg = s[i].neg;
       in.src[i].abs = s[i].abs;
-      memcpy(in.src[i].swz, "xxxx", 5);
+      memcpy(in.src[i].swz, loc_comp(s[i].l) ? "yyyy" : "xxxx", 5);
    }
    if (!prismrv_usse_encode_vec2(&in, &w)) {
       fail(c, "internal: vec2 op not encodable (dst %u:%u)", dst.bank, dst.reg);
@@ -196,16 +207,25 @@ alloc_temp(struct ctx *c)
    return mkloc(PRISMRV_USSE_BANK_R, c->next_r++);
 }
 
+/* four consecutive temporaries starting at an even register */
+static struct loc
+alloc_temp_block4(struct ctx *c)
+{
+   c->next_r = ALIGN_POT(c->next_r, 2);
+   if (c->next_r + 4 > PRISMRV_USSE_R_SLOTS) {
+      fail(c, "out of temporaries for the colour block");
+      return (struct loc){ 0 };
+   }
+   c->next_r += 4;
+   return mkloc(PRISMRV_USSE_BANK_R, c->next_r - 4);
+}
+
 /* sa slot holding the 32-bit literal @bits (deduplicated) */
 static struct loc
 sa_const(struct ctx *c, uint32_t bits)
 {
    struct prismrv_usse_binary *o = c->out;
 
-   if (bits == 0x3f800000u)
-      return mkloc(PRISMRV_USSE_BANK_SA, PRISMRV_USSE_SA_ONE);
-   if (bits == 0)
-      return mkloc(PRISMRV_USSE_BANK_SA, PRISMRV_USSE_SA_ZERO);
    for (unsigned s = o->sa_pool_first; s < c->pool_next; s++)
       if (o->sa_image[s] == bits)
          return mkloc(PRISMRV_USSE_BANK_SA, s);
@@ -388,7 +408,7 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *intr, mesa_shader_stage stage
       }
       for (unsigned i = 0; i < intr->def.num_components; i++)
          set_loc(c, &intr->def, i,
-                 mkloc(PRISMRV_USSE_BANK_PA, 4 * vec + comp + i));
+                 mkloc(PRISMRV_USSE_BANK_PA, PRISMRV_USSE_PA_REG(vec, comp + i)));
       break;
    }
 
@@ -457,6 +477,14 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *intr, mesa_shader_stage stage
             fail(c, "internal: store of an undefined value");
             return;
          }
+         if (stage == MESA_SHADER_FRAGMENT) {
+            if (comp + i > 3) {
+               fail(c, "fragment colour component %u", comp + i);
+               return;
+            }
+            c->color[comp + i] = src;       /* packed in the epilogue */
+            continue;
+         }
          if (slot >= 64) {
             fail(c, "output slot %u out of range", slot);
             return;
@@ -471,6 +499,45 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *intr, mesa_shader_stage stage
            nir_intrinsic_infos[intr->intrinsic].name);
       break;
    }
+}
+
+/*
+ * FS epilogue: gather the four colour components in four consecutive
+ * registers, pack them to RGBA8 into o0 (vpcku8f32, .end) and close the
+ * program like the vendor's single-phase pixel program does (nop.end).
+ */
+static void
+emit_fs_epilogue(struct ctx *c)
+{
+   struct prismrv_usse_vpck p = { .src_fmt = PRISMRV_USSE_PCK_F32,
+                                  .flags = PRISMRV_USSE_FLAG_END };
+   struct loc blk;
+   uint64_t w;
+
+   for (unsigned i = 0; i < 4; i++)
+      if (!c->color[i].valid) {
+         fail(c, "fragment colour component %u is never written", i);
+         return;
+      }
+   blk = alloc_temp_block4(c);
+   for (unsigned i = 0; i < 4 && !c->failed; i++)
+      emit_vmov(c, mkloc(PRISMRV_USSE_BANK_R, blk.reg + i), c->color[i]);
+   if (c->failed)
+      return;
+   p.dst = (struct prismrv_usse_dst){ PRISMRV_USSE_BANK_O, 0, PRISMRV_USSE_MASK_XYZW };
+   p.src = (struct prismrv_usse_src){ .bank = PRISMRV_USSE_BANK_R, .reg = blk.reg };
+   memcpy(p.src.swz, "xyzw", 5);
+   p.src2 = (struct prismrv_usse_src){ .bank = PRISMRV_USSE_BANK_R, .reg = blk.reg + 2 };
+   if (!prismrv_usse_encode_vpck(&p, &w)) {
+      fail(c, "internal: vpck not encodable");
+      return;
+   }
+   if (c->out->num_words + 2 > PRISMRV_USSE_MAX_WORDS) {
+      fail(c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      return;
+   }
+   c->out->code[c->out->num_words++] = w;
+   c->out->code[c->out->num_words++] = PRISMRV_USSE_NOP_END;
 }
 
 /* size of the uniform block in 32-bit slots; false if it cannot be known */
@@ -540,8 +607,6 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
    }
 
    out->stage = nir->info.stage;
-   out->sa_image[PRISMRV_USSE_SA_ONE] = 0x3f800000u;
-   out->sa_image[PRISMRV_USSE_SA_ZERO] = 0;
    out->sa_uniform_first = PRISMRV_USSE_SA_UNIFORM0;
    out->sa_uniform_count = uniforms;
    out->sa_pool_first = PRISMRV_USSE_SA_UNIFORM0 + uniforms;
@@ -550,6 +615,11 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
    c.num_defs = impl->ssa_alloc;
    c.locs = rzalloc_array(NULL, struct loc, MAX2(c.num_defs, 1) * 4);
    c.pool_next = out->sa_pool_first;
+
+   if (nir->info.stage == MESA_SHADER_FRAGMENT) {
+      out->code[out->num_words++] = PRISMRV_USSE_PHAS_END_PIXEL;
+      out->code[out->num_words++] = PRISMRV_USSE_PHAS_PIXEL;
+   }
 
    nir_foreach_block(block, impl) {
       nir_foreach_instr(instr, block) {
@@ -593,6 +663,9 @@ prismrv_nir_to_usse_native(nir_shader *orig, struct prismrv_usse_binary *out)
          break;
    }
 
+   if (!c.failed && nir->info.stage == MESA_SHADER_FRAGMENT)
+      emit_fs_epilogue(&c);
+
    out->num_r_slots = c.next_r;
    out->sa_pool_count = c.pool_next - out->sa_pool_first;
    ralloc_free(c.locs);
@@ -628,6 +701,7 @@ prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
    struct prismrv_usse_vmad v;
    struct prismrv_usse_vec2 v2;
    struct prismrv_usse_vmov vm;
+   struct prismrv_usse_vpck pk;
    char mk[8];
    int n;
 
@@ -644,6 +718,21 @@ prismrv_usse_disasm(uint64_t word, char *buf, unsigned size)
                    v2.dst.reg, mask_str(v2.dst.mask, mk));
       for (unsigned i = 0; i < 2 && n > 0 && (unsigned)n < size; i++)
          n += fmt_src(buf + n, size - n, &v2.src[i]);
+   } else if (word == PRISMRV_USSE_PHAS_END_PIXEL) {
+      snprintf(buf, size, "phas.end #0, #0, pixel, end, parallel");
+   } else if (word == PRISMRV_USSE_PHAS_PIXEL) {
+      snprintf(buf, size, "phas #0, #0, pixel, end, parallel");
+   } else if (word == PRISMRV_USSE_NOP_END) {
+      snprintf(buf, size, "nop.end");
+   } else if (prismrv_usse_decode_vpck(word, &pk)) {
+      n = snprintf(buf, size, "vpcku8f%s%s.scale %s%u.%s",
+                   pk.src_fmt == PRISMRV_USSE_PCK_F32 ? "32" : "16",
+                   pk.flags & PRISMRV_USSE_FLAG_END ? ".end" : "",
+                   bank_name[pk.dst.bank], pk.dst.reg, mask_str(pk.dst.mask, mk));
+      if (n > 0 && (unsigned)n < size)
+         n += fmt_src(buf + n, size - n, &pk.src);
+      if (pk.src_fmt == PRISMRV_USSE_PCK_F32 && n > 0 && (unsigned)n < size)
+         snprintf(buf + n, size - n, ", %s%u", bank_name[pk.src2.bank], pk.src2.reg);
    } else if (prismrv_usse_decode_vmov(word, &vm)) {
       static const char *const ty[] = { "i8", "i16", "i32" };
 

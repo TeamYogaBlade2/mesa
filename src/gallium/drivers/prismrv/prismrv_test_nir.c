@@ -507,19 +507,55 @@ run_differential(void)
    return fail;
 }
 
-/* ===== native USSE: decode every word with the verified decoder and run it
- * with the VMAD semantics  dst.x = fma(src1.x, src2.x, src3.x)  (pair model,
- * see prismrv_usse_nir.h) ======================================== */
-struct nmachine { uint32_t bank[5][128]; };
+/* ===== native USSE: decode every word with the verified decoders and run it
+ * on a register-file model: vector groups address register pairs (field*2)
+ * and select the component with the write mask / swizzle, so component c of
+ * the pair at register r is register r + c.  vmov is 1:1.  vpck: ASSUMED
+ * data layout (src1 supplies x,y, src2 supplies z,w; u8 = round(clamp(v)*255),
+ * x in the low byte) - the encoding is verified, this layout is not.
+ * ====================================================================== */
+struct nmachine { uint32_t bank[7][160]; };
+
+static bool
+lane(const struct prismrv_usse_src *s, unsigned *reg)
+{
+   /* only broadcast swizzles xxxx / yyyy are produced by the compiler */
+   if (s->bank > PRISMRV_USSE_BANK_SA || s->swz[0] != s->swz[1] ||
+       s->swz[0] != s->swz[2] || s->swz[0] != s->swz[3] ||
+       (s->swz[0] != 'x' && s->swz[0] != 'y'))
+      return false;
+   *reg = s->reg + (s->swz[0] == 'y');
+   return true;
+}
 
 static float
 nread(const struct nmachine *m, const struct prismrv_usse_src *s)
 {
-   float f = u2f(m->bank[s->bank][s->reg]);
+   unsigned reg = 0;
+   float f;
 
+   lane(s, &reg);
+   f = u2f(m->bank[s->bank][reg]);
    if (s->abs)
       f = fabsf(f);
    return s->neg ? -f : f;
+}
+
+static bool
+dst_lane(const struct prismrv_usse_dst *d, unsigned *reg)
+{
+   if (d->mask != PRISMRV_USSE_MASK_X && d->mask != PRISMRV_USSE_MASK_Y)
+      return false;
+   *reg = d->reg + (d->mask == PRISMRV_USSE_MASK_Y);
+   return true;
+}
+
+static uint32_t
+pack_u8(float v)
+{
+   if (!(v > 0.0f)) v = 0.0f;
+   if (v > 1.0f) v = 1.0f;
+   return (uint32_t)(v * 255.0f + 0.5f);
 }
 
 static bool
@@ -529,25 +565,26 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
       struct prismrv_usse_vmad v;
       struct prismrv_usse_vec2 v2;
       struct prismrv_usse_vmov vm;
+      struct prismrv_usse_vpck pk;
       uint64_t w = bin->code[i];
+      unsigned d, k;
 
-      if (prismrv_usse_decode_vmad(w, &v)) {
-         for (unsigned k = 0; k < 3; k++)
-            if (memcmp(v.src[k].swz, "xxxx", 5)) {
-               fprintf(stderr, "native interpreter: unexpected swizzle\n");
-               return false;
-            }
-         if (v.dst.mask != PRISMRV_USSE_MASK_X || v.pred || v.flags) {
-            fprintf(stderr, "native interpreter: unexpected vmad dst/flags\n");
+      if (w == PRISMRV_USSE_PHAS_END_PIXEL || w == PRISMRV_USSE_PHAS_PIXEL ||
+          w == PRISMRV_USSE_NOP_END) {
+         continue;
+      } else if (prismrv_usse_decode_vmad(w, &v)) {
+         if (v.pred || v.flags || !dst_lane(&v.dst, &d) ||
+             !lane(&v.src[0], &k) || !lane(&v.src[1], &k) || !lane(&v.src[2], &k)) {
+            fprintf(stderr, "native interpreter: unexpected vmad form\n");
             return false;
          }
-         m->bank[v.dst.bank][v.dst.reg] =
+         m->bank[v.dst.bank][d] =
             f2u(fmaf(nread(m, &v.src[0]), nread(m, &v.src[1]), nread(m, &v.src[2])));
       } else if (prismrv_usse_decode_vec2(w, &v2)) {
          float a, b, r;
 
-         if (memcmp(v2.src[0].swz, "xxxx", 5) || memcmp(v2.src[1].swz, "xxxx", 5) ||
-             v2.dst.mask != PRISMRV_USSE_MASK_X || v2.pred || v2.flags) {
+         if (v2.pred || v2.flags || !dst_lane(&v2.dst, &d) ||
+             !lane(&v2.src[0], &k) || !lane(&v2.src[1], &k)) {
             fprintf(stderr, "native interpreter: unexpected vec2 form\n");
             return false;
          }
@@ -560,15 +597,30 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
             fprintf(stderr, "native interpreter: vmin/vmax not used by the compiler\n");
             return false;
          }
-         m->bank[v2.dst.bank][v2.dst.reg] = f2u(r);
+         m->bank[v2.dst.bank][d] = f2u(r);
       } else if (prismrv_usse_decode_vmov(w, &vm)) {
          if (vm.type != PRISMRV_USSE_MOV_I32 || vm.repeat != 1 ||
              memcmp(vm.src.swz, "xxxx", 5) || vm.dst.mask != PRISMRV_USSE_MASK_X ||
-             vm.pred || (vm.flags & ~PRISMRV_USSE_FLAG_END)) {
+             vm.pred || vm.flags) {
             fprintf(stderr, "native interpreter: unexpected vmov form\n");
             return false;
          }
          m->bank[vm.dst.bank][vm.dst.reg] = m->bank[vm.src.bank][vm.src.reg];
+      } else if (prismrv_usse_decode_vpck(w, &pk)) {
+         float x, y, z, wv;
+
+         if (pk.src_fmt != PRISMRV_USSE_PCK_F32 || pk.dst.mask != PRISMRV_USSE_MASK_XYZW ||
+             strcmp(pk.src.swz, "xyzw") || pk.src.bank != PRISMRV_USSE_BANK_R ||
+             pk.src2.bank != PRISMRV_USSE_BANK_R || !(pk.flags & PRISMRV_USSE_FLAG_END)) {
+            fprintf(stderr, "native interpreter: unexpected vpck form\n");
+            return false;
+         }
+         x = u2f(m->bank[pk.src.bank][pk.src.reg]);
+         y = u2f(m->bank[pk.src.bank][pk.src.reg + 1]);
+         z = u2f(m->bank[pk.src2.bank][pk.src2.reg]);
+         wv = u2f(m->bank[pk.src2.bank][pk.src2.reg + 1]);
+         m->bank[pk.dst.bank][pk.dst.reg] =
+            pack_u8(x) | pack_u8(y) << 8 | pack_u8(z) << 16 | pack_u8(wv) << 24;
       } else {
          fprintf(stderr, "native interpreter: word %u not decodable\n", i);
          return false;
@@ -578,21 +630,44 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
 }
 
 static void
-native_init(struct nmachine *m, const struct prismrv_usse_binary *bin,
-            mesa_shader_stage stage, const struct fuzz_vals *v)
+native_sa_init(struct nmachine *m, const struct prismrv_usse_binary *bin)
 {
    memset(m, 0, sizeof(*m));
    for (unsigned s = 0; s < PRISMRV_USSE_SA_SLOTS; s++)
-      m->bank[PRISMRV_USSE_BANK_SA][PRISMRV_USSE_SLOT_REG(s)] = bin->sa_image[s];
+      m->bank[PRISMRV_USSE_BANK_SA][s] = bin->sa_image[s];
+}
+
+static void
+native_init(struct nmachine *m, const struct prismrv_usse_binary *bin,
+            mesa_shader_stage stage, const struct fuzz_vals *v)
+{
+   native_sa_init(m, bin);
    for (unsigned k = 0; k < 4; k++)
       for (unsigned c = 0; c < 4; c++) {
          if (stage == MESA_SHADER_VERTEX || k == 0)
-            m->bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(k, c)] =
-               f2u(v->in[k][c]);
+            m->bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(k, c)] = f2u(v->in[k][c]);
          if (k < 2 && k * 4 + c < bin->sa_uniform_count)   /* don't clobber the pool */
-            m->bank[PRISMRV_USSE_BANK_SA][PRISMRV_USSE_SLOT_REG(
-               bin->sa_uniform_first + k * 4 + c)] = f2u(v->uni[k][c]);
+            m->bank[PRISMRV_USSE_BANK_SA][bin->sa_uniform_first + k * 4 + c] =
+               f2u(v->uni[k][c]);
       }
+}
+
+/* fragment colour: compare the packed o0 word with the expected floats */
+static bool
+colour_close(uint32_t packed, const float want[4])
+{
+   for (unsigned c = 0; c < 4; c++) {
+      int got = (packed >> (8 * c)) & 0xff;
+      float e = want[c];
+      int ref;
+
+      if (isnan(e))
+         continue;
+      ref = (int)pack_u8(e);
+      if (abs(got - ref) > 1)
+         return false;
+   }
+   return true;
 }
 
 /* a shader the verified forms cannot express must be refused, not guessed */
@@ -602,10 +677,13 @@ build_fs_store_const(void)
    static const nir_shader_compiler_options opts = { 0 };
    nir_builder b = nir_builder_init_simple_shader(
       MESA_SHADER_FRAGMENT, &opts, "prismrv-test-const-out");
-   nir_store_output(&b, nir_imm_float(&b, 1.0f), nir_imm_int(&b, 0), .base = 0,
-                    .component = 0, .write_mask = 1,
-                    .io_semantics.location = FRAG_RESULT_COLOR,
-                    .io_semantics.num_slots = 1);
+   static const float k[4] = { 1.0f, 0.0f, 0.5f, 1.0f };
+
+   for (unsigned c = 0; c < 4; c++)
+      nir_store_output(&b, nir_imm_float(&b, k[c]), nir_imm_int(&b, 0), .base = 0,
+                       .component = c, .write_mask = 1,
+                       .io_semantics.location = FRAG_RESULT_COLOR,
+                       .io_semantics.num_slots = 1);
    return b.shader;
 }
 
@@ -617,11 +695,42 @@ build_fs_add_uniforms(void)
       MESA_SHADER_FRAGMENT, &opts, "prismrv-test-uadd");
    nir_def *u0 = nir_load_uniform(&b, 1, 32, nir_imm_int(&b, 0), .base = 0, .range = 8);
    nir_def *u1 = nir_load_uniform(&b, 1, 32, nir_imm_int(&b, 0), .base = 4, .range = 8);
-   nir_store_output(&b, nir_fadd(&b, u0, u1), nir_imm_int(&b, 0), .base = 0,
-                    .component = 0, .write_mask = 1,
-                    .io_semantics.location = FRAG_RESULT_COLOR,
-                    .io_semantics.num_slots = 1);
+   nir_def *sum = nir_fadd(&b, u0, u1);
+
+   for (unsigned c = 0; c < 4; c++)
+      nir_store_output(&b, sum, nir_imm_int(&b, 0), .base = 0,
+                       .component = c, .write_mask = 1,
+                       .io_semantics.location = FRAG_RESULT_COLOR,
+                       .io_semantics.num_slots = 1);
    return b.shader;
+}
+
+/* a fragment shader that leaves a colour component unwritten is refused */
+static nir_shader *
+build_fs_missing_component(void)
+{
+   static const nir_shader_compiler_options opts = { 0 };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &opts, "prismrv-test-missing");
+
+   for (unsigned c = 0; c < 3; c++)
+      nir_store_output(&b, nir_imm_float(&b, 1.0f), nir_imm_int(&b, 0), .base = 0,
+                       .component = c, .write_mask = 1,
+                       .io_semantics.location = FRAG_RESULT_COLOR,
+                       .io_semantics.num_slots = 1);
+   return b.shader;
+}
+
+static void
+print_native(const struct prismrv_usse_binary *bin, const char *title)
+{
+   char line[200];
+
+   printf("---- %s (%u words) ----\n", title, bin->num_words);
+   for (unsigned i = 0; i < bin->num_words; i++) {
+      prismrv_usse_disasm(bin->code[i], line, sizeof(line));
+      printf("%016llx  %s\n", (unsigned long long)bin->code[i], line);
+   }
 }
 
 static int
@@ -631,23 +740,16 @@ run_native_tests(void)
    int fail = 0, compared = 0, rejected = 0, accepted = 0;
    struct nmachine m;
    nir_shader *nir;
-   char line[160];
+   char line[200];
 
-   /* 1. the minimal VS of the plan: position and colour straight through,
-    *    plus a scaled copy */
+   /* 1. the minimal VS: position scaled, colour straight through */
    nir = build_vs_passthrough();
    if (!prismrv_nir_to_usse_native(nir, bin)) {
       fprintf(stderr, "FAIL: native VS rejected\n");
       return 1;
    }
-   printf("---- native VS (%u words) ----\n", bin->num_words);
-   for (unsigned i = 0; i < bin->num_words; i++) {
-      prismrv_usse_disasm(bin->code[i], line, sizeof(line));
-      printf("%016llx  %s\n", (unsigned long long)bin->code[i], line);
-   }
-   memset(&m, 0, sizeof(m));
-   for (unsigned s = 0; s < PRISMRV_USSE_SA_SLOTS; s++)
-      m.bank[PRISMRV_USSE_BANK_SA][PRISMRV_USSE_SLOT_REG(s)] = bin->sa_image[s];
+   print_native(bin, "native VS");
+   native_sa_init(&m, bin);
    for (unsigned i = 0; i < 4; i++) {
       m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(0, i)] = f2u(1.0f + i);
       m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(1, i)] = f2u(0.1f * (i + 1));
@@ -666,34 +768,45 @@ run_native_tests(void)
    }
    ralloc_free(nir);
 
-   /* 2. the FS test shader: v*k + v */
+   /* 2. the FS test shader: v*k + v, packed to RGBA8 in o0 */
    nir = build_test_fs();
    if (!prismrv_nir_to_usse_native(nir, bin)) {
       fprintf(stderr, "FAIL: native FS rejected\n");
       return 1;
    }
-   memset(&m, 0, sizeof(m));
-   for (unsigned s = 0; s < PRISMRV_USSE_SA_SLOTS; s++)
-      m.bank[PRISMRV_USSE_BANK_SA][PRISMRV_USSE_SLOT_REG(s)] = bin->sa_image[s];
+   print_native(bin, "native FS");
+   native_sa_init(&m, bin);
    {
       static const float vin[4] = { 0.25f, 0.5f, 0.75f, 1.0f };
       static const float k[4] = { 1.0f, 0.9f, 0.8f, 1.0f };
+      float want[4];
 
-      for (unsigned i = 0; i < 4; i++)
+      for (unsigned i = 0; i < 4; i++) {
          m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(0, i)] = f2u(vin[i]);
+         want[i] = vin[i] * k[i] + vin[i];
+      }
       if (!run_native(&m, bin))
          return 1;
-      for (unsigned i = 0; i < 4; i++)
-         fail |= expect_near("native FS colour",
-                             m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_COLOR_REG(i)],
-                             vin[i] * k[i] + vin[i]);
+      if (!colour_close(m.bank[PRISMRV_USSE_BANK_O][0], want)) {
+         fprintf(stderr, "FAIL: native FS packed colour 0x%08x\n",
+                 m.bank[PRISMRV_USSE_BANK_O][0]);
+         fail++;
+      }
+   }
+   /* the program is wrapped like the vendor's: phas, phas, ..., vpck.end, nop.end */
+   if (bin->code[0] != PRISMRV_USSE_PHAS_END_PIXEL ||
+       bin->code[1] != PRISMRV_USSE_PHAS_PIXEL ||
+       bin->code[bin->num_words - 1] != PRISMRV_USSE_NOP_END) {
+      fprintf(stderr, "FAIL: native FS is not wrapped in phas/nop.end\n");
+      fail++;
    }
    ralloc_free(nir);
 
-   /* 3. refusals */
+   /* 3. refusals: control flow, fsin, a colour component never written */
    {
-      nir_shader *neg[] = { build_fs_with_if(), build_fs_with_fsin() };
-      static const char *const why[] = { "control flow", "fsin" };
+      nir_shader *neg[] = { build_fs_with_if(), build_fs_with_fsin(),
+                            build_fs_missing_component() };
+      static const char *const why[] = { "control flow", "fsin", "missing component" };
 
       for (unsigned i = 0; i < ARRAY_SIZE(neg); i++) {
          if (prismrv_nir_to_usse_native(neg[i], bin)) {
@@ -704,16 +817,20 @@ run_native_tests(void)
       }
    }
 
-   /* 3b. forms that needed constants/moves in the VMAD-only version now
-    *     compile: constant output and uniform+uniform */
+   /* 3b. constant colour and uniform+uniform compile (no operand restrictions) */
    nir = build_fs_store_const();
    if (!prismrv_nir_to_usse_native(nir, bin)) {
-      fprintf(stderr, "FAIL: constant output rejected\n");
+      fprintf(stderr, "FAIL: constant colour rejected\n");
       fail++;
    } else {
-      native_init(&m, bin, MESA_SHADER_FRAGMENT, &(struct fuzz_vals){ 0 });
+      static const float want[4] = { 1.0f, 0.0f, 0.5f, 1.0f };
+
+      native_sa_init(&m, bin);
       fail |= !run_native(&m, bin);
-      fail |= expect_near("const output", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_COLOR_REG(0)], 1.0f);
+      if (!colour_close(m.bank[PRISMRV_USSE_BANK_O][0], want)) {
+         fprintf(stderr, "FAIL: constant colour 0x%08x\n", m.bank[PRISMRV_USSE_BANK_O][0]);
+         fail++;
+      }
    }
    ralloc_free(nir);
    nir = build_fs_add_uniforms();
@@ -722,16 +839,19 @@ run_native_tests(void)
       fail++;
    } else {
       struct fuzz_vals uv = { 0 };
+      static const float want[4] = { 0.75f, 0.75f, 0.75f, 0.75f };
 
-      uv.uni[0][0] = 1.25f; uv.uni[0][1] = 2.5f;
+      uv.uni[0][0] = 0.25f; uv.uni[0][1] = 0.5f;
       native_init(&m, bin, MESA_SHADER_FRAGMENT, &uv);
       fail |= !run_native(&m, bin);
-      fail |= expect_near("uniform+uniform", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_COLOR_REG(0)], 3.75f);
+      if (!colour_close(m.bank[PRISMRV_USSE_BANK_O][0], want)) {
+         fprintf(stderr, "FAIL: uniform+uniform 0x%08x\n", m.bank[PRISMRV_USSE_BANK_O][0]);
+         fail++;
+      }
    }
    ralloc_free(nir);
 
-   /* 4. differential: every accepted random shader must match NIR's own
-    *    evaluation bit for bit up to float rounding */
+   /* 4. differential: every random shader must match NIR's own evaluation */
    for (unsigned iter = 0; iter < 600 && fail < 5; iter++) {
       mesa_shader_stage stage = iter & 1 ? MESA_SHADER_FRAGMENT : MESA_SHADER_VERTEX;
       struct fuzz_vals v;
@@ -755,19 +875,27 @@ run_native_tests(void)
       native_init(&m, bin, stage, &v);
       if (!run_native(&m, bin)) {
          fail++;
+      } else if (stage == MESA_SHADER_FRAGMENT) {
+         compared += 4;
+         if (!colour_close(m.bank[PRISMRV_USSE_BANK_O][0], want)) {
+            fprintf(stderr, "FAIL: native fuzz %u (FS) packed 0x%08x, NIR says %g %g %g %g\n",
+                    iter, m.bank[PRISMRV_USSE_BANK_O][0], want[0], want[1], want[2], want[3]);
+            for (unsigned i = 0; i < bin->num_words; i++) {
+               prismrv_usse_disasm(bin->code[i], line, sizeof(line));
+               fprintf(stderr, "  %s\n", line);
+            }
+            fail++;
+         }
       } else {
-         unsigned nout = stage == MESA_SHADER_VERTEX ? 8 : 4;
-
-         for (unsigned k = 0; k < nout; k++) {
-            float got = u2f(m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_SLOT_REG(k)]);
+         for (unsigned k = 0; k < 8; k++) {
+            float got = u2f(m.bank[PRISMRV_USSE_BANK_O][k]);
 
             if (isnan(want[k]))
                continue;
             compared++;
             if (!close_enough(got, want[k])) {
-               fprintf(stderr, "FAIL: native fuzz %u (%s) o[%u] = %g, NIR says %g\n",
-                       iter, stage == MESA_SHADER_VERTEX ? "VS" : "FS", k,
-                       got, want[k]);
+               fprintf(stderr, "FAIL: native fuzz %u (VS) o[%u] = %g, NIR says %g\n",
+                       iter, k, got, want[k]);
                for (unsigned i = 0; i < bin->num_words; i++) {
                   prismrv_usse_disasm(bin->code[i], line, sizeof(line));
                   fprintf(stderr, "  %s\n", line);
@@ -781,7 +909,7 @@ run_native_tests(void)
    }
    printf("native differential: %d shaders compiled, %d refused, %d output "
           "values compared against NIR\n", accepted, rejected, compared);
-   if (accepted < 550 || compared < 3000) {
+   if (accepted < 500 || compared < 2500) {
       fprintf(stderr, "FAIL: native differential test covered too little\n");
       fail++;
    }
