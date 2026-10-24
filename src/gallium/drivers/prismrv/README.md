@@ -88,3 +88,32 @@ EGL smoke/lifecycle tests on the drm-shim.
 
 `drm-uapi/prismrv_drm.h` is a copy of the kernel uAPI header; keep it in
 sync with `include/uapi/drm/prismrv_drm.h` in the linux tree.
+
+## CI notes
+
+`.github/workflows/prismrv.yml` has two jobs: a full `meson-build` and a
+`syntax-only` pass. The build job's last step checks this driver's emitted command
+stream against the kernel validator, which means it has to fetch
+`TeamYogaBlade2/linux` at the revision pinned in `tests/LINUX_VALIDATOR_REV`:
+
+    token: ${{ secrets.LINUX_REPO_TOKEN || github.token }}
+
+On a `push` to `prismrv-oxalpha` this works. On a `pull_request` it does not, when the
+Linux tree is private and the secret is unavailable to fork/PR contexts - the fallback
+`github.token` cannot read another repository. Observed: the same commit `64e66818`
+passes on `push` and fails on `pull_request`, with the failure landing exactly on that
+step.
+
+So a red PR run is not necessarily a code problem. Check `gh run list` for the same SHA
+on `push` before investigating the driver:
+
+    gh run list --limit 5 --repo TeamYogaBlade2/mesa \
+        --json databaseId,conclusion,event,headSha \
+        -q '.[] | "\(.databaseId) \(.conclusion) \(.event) \(.headSha[0:8])"'
+
+Verifying the contract locally instead needs that same Linux revision, and this is worth
+knowing before trying: the Linux checkout is a **partial clone with
+`remote.origin.partialclonefilter=blob:none`**, so `git show <sha>:<path>`,
+`git cat-file blob <sha>:<path>` and `git archive <sha>` all fetch the blob over the
+network on demand. Measured here: over 90 s for one file, and a whole-tree `git archive`
+timed out at 200 s. Do the extraction from a full clone, or run the check in CI.
