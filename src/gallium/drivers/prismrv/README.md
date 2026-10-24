@@ -98,14 +98,13 @@ stream against the kernel validator, which means it has to fetch
 
     token: ${{ secrets.LINUX_REPO_TOKEN || github.token }}
 
-On a `push` to `prismrv-oxalpha` this works. On a `pull_request` it does not, when the
-Linux tree is private and the secret is unavailable to fork/PR contexts - the fallback
-`github.token` cannot read another repository. Observed: the same commit `64e66818`
-passes on `push` and fails on `pull_request`, with the failure landing exactly on that
-step.
+Observed on `64e66818`: `push` passes, `pull_request` fails, and the failure lands on
+exactly that step. **That is not a general rule** - `a78f67d3` passed on `pull_request`,
+so "PRs always fail" would be the wrong reading. What it suggests is that the Linux
+checkout step depends on something contextual (the secret, or the pinned revision being
+reachable), and fails when that is not available rather than when the driver is wrong.
 
-So a red PR run is not necessarily a code problem. Check `gh run list` for the same SHA
-on `push` before investigating the driver:
+So before investigating the driver, check whether the same SHA passed on `push`:
 
     gh run list --limit 5 --repo TeamYogaBlade2/mesa \
         --json databaseId,conclusion,event,headSha \
