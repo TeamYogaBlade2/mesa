@@ -91,6 +91,6 @@ prismrv_drm_submit(int fd, uint32_t cmd_type,
 
    ret = drmIoctl(fd, DRM_IOCTL_PRISMRV_SUBMIT, &s);
    if (ret == 0 && out_fence_fd)
-      *out_fence_fd = (int32_t)s.out_fence_fd;
+      *out_fence_fd = s.out_fence_fd;
    return ret;
 }

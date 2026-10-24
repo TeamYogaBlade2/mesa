@@ -609,8 +609,9 @@ run_native(struct nmachine *m, const struct prismrv_usse_binary *bin)
          switch (v2.op) {
          case PRISMRV_USSE_VADD: r = a + b; break;
          case PRISMRV_USSE_VMUL: r = a * b; break;
+         case PRISMRV_USSE_VMIN: r = fminf(a, b); break;
+         case PRISMRV_USSE_VMAX: r = fmaxf(a, b); break;
          default:
-            fprintf(stderr, "native interpreter: vmin/vmax not used by the compiler\n");
             return false;
          }
          m->bank[v2.dst.bank][d] = f2u(r);
@@ -737,6 +738,28 @@ build_fs_missing_component(void)
    return b.shader;
 }
 
+/* VS exercising min / max / saturate (fsat is lowered to min+max) */
+static nir_shader *
+build_vs_minmax(void)
+{
+   static const nir_shader_compiler_options opts = { .lower_fsat = true };
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_VERTEX, &opts, "prismrv-test-minmax");
+   nir_def *a = nir_load_input(&b, 4, 32, nir_imm_int(&b, 0), .base = 0, .component = 0,
+                               .dest_type = nir_type_float32,
+                               .io_semantics.location = VERT_ATTRIB_GENERIC0,
+                               .io_semantics.num_slots = 1);
+   nir_def *x = nir_channel(&b, a, 0), *y = nir_channel(&b, a, 1);
+   nir_def *z = nir_channel(&b, a, 2), *w = nir_channel(&b, a, 3);
+   nir_def *r[4] = { nir_fmin(&b, x, y), nir_fmax(&b, z, w),
+                     nir_fsat(&b, nir_fadd(&b, x, z)), nir_fsat(&b, nir_fneg(&b, w)) };
+
+   for (unsigned c = 0; c < 4; c++)
+      nir_store_output(&b, r[c], nir_imm_int(&b, 0), .base = 0, .component = c, .write_mask = 1,
+                       .src_type = nir_type_float32, .io_semantics.location = VARYING_SLOT_POS,
+                       .io_semantics.num_slots = 1);
+   return b.shader;
+}
+
 /* VS exercising the special-function group: rcp, rsq, log2, exp2 */
 static nir_shader *
 build_vs_special(void)
@@ -806,6 +829,27 @@ run_native_tests(void)
       snprintf(nm, sizeof(nm), "native VS var%u", i);
       fail |= expect_near(nm, m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_VARY_REG(i)],
                           0.1f * (i + 1));
+   }
+   ralloc_free(nir);
+
+   /* 1a. min / max / saturate */
+   nir = build_vs_minmax();
+   if (!prismrv_nir_to_usse_native(nir, bin)) {
+      fprintf(stderr, "FAIL: native min/max VS rejected\n");
+      return 1;
+   }
+   native_sa_init(&m, bin);
+   {
+      static const float in[4] = { 0.25f, 0.75f, 0.5f, 2.0f };
+      /* min(.25,.75)=.25  max(.5,2)=2  sat(.25+.5)=.75  sat(-2)=0 */
+      static const float want[4] = { 0.25f, 2.0f, 0.75f, 0.0f };
+
+      for (unsigned i = 0; i < 4; i++)
+         m.bank[PRISMRV_USSE_BANK_PA][PRISMRV_USSE_PA_REG(0, i)] = f2u(in[i]);
+      if (!run_native(&m, bin))
+         return 1;
+      for (unsigned i = 0; i < 4; i++)
+         fail |= expect_near("native minmax", m.bank[PRISMRV_USSE_BANK_O][PRISMRV_USSE_O_POS_REG(i)], want[i]);
    }
    ralloc_free(nir);
 

@@ -16,6 +16,9 @@
  *   ffma a,b,c    vmad d, a, b, c              (src1 = r/pa operand), else
  *                 vmul t,a,b ; vadd d,t,c      (two roundings, NOT fused)
  *   store_output  vmov.i32 o, src
+ *   fmin/fmax     vmin/vmax d, a, b            (the vendor compiler emits the f16 forms
+ *                 vf16min/vf16max for GLSL min/max/clamp; NaN behaviour of the
+ *                 hardware is UNVERIFIED, NIR leaves it open for GLSL)
  *   frcp/frsq/flog2/fexp2   vrcp/vrsq/vlog/vexp d, a      (f32; the vendor's
  *                 lowering turns fdiv/fsqrt/fpow into these)
  *
@@ -319,6 +322,8 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
    case nir_op_fadd:
    case nir_op_fsub:
    case nir_op_fmul:
+   case nir_op_fmin:
+   case nir_op_fmax:
    case nir_op_ffma:
    case nir_op_frcp:
    case nir_op_frsq:
@@ -390,6 +395,12 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
       }
       case nir_op_fmul:
          emit_vec2(c, PRISMRV_USSE_VMUL, d, plain(a), plain(b));
+         break;
+      case nir_op_fmin:
+         emit_vec2(c, PRISMRV_USSE_VMIN, d, plain(a), plain(b));
+         break;
+      case nir_op_fmax:
+         emit_vec2(c, PRISMRV_USSE_VMAX, d, plain(a), plain(b));
          break;
       case nir_op_ffma:
          if (src1_ok(a)) {

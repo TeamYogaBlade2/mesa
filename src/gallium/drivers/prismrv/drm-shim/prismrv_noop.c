@@ -7,6 +7,7 @@
  * running the Gallium driver against a fake DRM device without hardware.
  */
 
+#include <errno.h>
 #include <limits.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -57,6 +58,12 @@ static int
 prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_get_param *gp = arg;
+
+   /* same reserved-field rule as the kernel driver */
+   if (gp->pad) {
+      errno = EINVAL;
+      return -1;
+   }
 
    switch (gp->param) {
    case PRISMRV_PARAM_CORE_ID:
@@ -122,6 +129,11 @@ prismrv_ioctl_gem_mmap_offset(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_gem_mmap_offset *mo = arg;
 
+   if (mo->flags) {
+      errno = EINVAL;
+      return -1;
+   }
+
    struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
    struct shim_bo *bo = drm_shim_bo_lookup(shim_fd, mo->handle);
 
@@ -136,6 +148,12 @@ static int
 prismrv_ioctl_submit(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_submit *submit = arg;
+
+   /* the kernel rejects non-zero padding (UAPI v5) */
+   if (submit->pad0 || submit->pad1) {
+      errno = EINVAL;
+      return -1;
+   }
 
    /*
     * Complete immediately.  Hand out an eventfd and write to it so it
