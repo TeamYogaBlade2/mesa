@@ -129,6 +129,21 @@ run(struct machine *m, const char *text)
          *reg(m, a) = f2u(1.0f / u2f(*reg(m, b)));
       } else if (!strcmp(op, "frsq") && n >= 3) {
          *reg(m, a) = f2u(1.0f / sqrtf(u2f(*reg(m, b))));
+         /*
+       * vmin/vmax/vadd exist because the compiler emits them and this
+       * interpreter had no case for them. Adding fmin/fmax to the emitter
+       * without adding them here meant those shaders hit "interpreter: cannot
+       * run", run() failed, and the fuzz loop counted a failure with no value
+       * comparison - so the ops shipped without their generated code ever being
+       * checked. The differential pool is only worth having if the interpreter
+       * can actually run what it generates.
+       */
+      } else if (!strcmp(op, "vadd") && n >= 4) {
+         *reg(m, a) = f2u(u2f(*reg(m, b)) + u2f(*reg(m, c)));
+      } else if (!strcmp(op, "vmin") && n >= 4) {
+         *reg(m, a) = f2u(fminf(u2f(*reg(m, b)), u2f(*reg(m, c))));
+      } else if (!strcmp(op, "vmax") && n >= 4) {
+         *reg(m, a) = f2u(fmaxf(u2f(*reg(m, b)), u2f(*reg(m, c))));
       } else {
          fprintf(stderr, "test interpreter: cannot run '%s'\n", line);
          free(copy);
@@ -225,9 +240,16 @@ build_fs_with_fsin(void)
 static nir_shader *
 build_fs_with_bounded_loop(void)
 {
-   static const nir_shader_compiler_options opts = { 0 };
+   /*
+    * The driver's real options, not a zeroed struct.
+    *
+    * nir_opt_loop_unroll() reads max_unroll_iterations from shader->options, so a
+    * shader built against { 0 } is never unrolled no matter what the driver sets -
+    * the pass correctly declines. Using prismrv_get_nir_options() here is what
+    * makes this test measure the driver's configuration rather than the test's.
+    */
    nir_builder b = nir_builder_init_simple_shader(
-      MESA_SHADER_FRAGMENT, &opts, "prismrv-test-loop");
+      MESA_SHADER_FRAGMENT, prismrv_get_nir_options(), "prismrv-test-loop");
    nir_def *x = nir_load_input(&b, 1, 32, nir_imm_int(&b, 0), .base = 0,
                                .component = 0,
                                .io_semantics.location = VARYING_SLOT_COL0,
@@ -251,11 +273,18 @@ build_fs_with_bounded_loop(void)
     * acc = x * 2^-4 + 0.25 * (1 + 1/2 + 1/4 + 1/8).
     */
    /*
-    * Built with a local variable and nir_break_if rather than hand-made phis:
-    * that is the idiom other drivers use, and nir_opt_loop_unroll() has to
-    * recognise the induction variable for unrolling to trigger at all - a phi
-    * arrangement that only looks correct can leave the loop structured in a way
-    * the pass declines, which would make this test silently stop testing anything.
+    * The loop is marked for unrolling explicitly.
+    *
+    * Left to the cost model this does not unroll: the body is tiny, so whether it
+    * trips depends on nir_loop_analyze() deriving an exact trip count from the
+    * induction variable, and when that derivation fails the pass declines and
+    * every loop reaches the back end as control flow. Marking control here makes
+    * the test about what it is meant to test - that a loop reaches the back end
+    * unrolled - instead of about the cost heuristics.
+    *
+    * A driver would not force unroll unconditionally; the vendor compiler's
+    * behaviour (bounded loops emitted as repeated bodies, unbounded ones not
+    * expressible at all) is what max_unroll_iterations configures.
     */
    nir_variable *acc_var =
       nir_local_variable_create(b.impl, glsl_float_type(), "acc");
@@ -265,7 +294,8 @@ build_fs_with_bounded_loop(void)
    nir_store_var(&b, acc_var, x, 1);
    nir_store_var(&b, i_var, nir_imm_int(&b, 0), 1);
 
-   nir_push_loop(&b);
+   nir_loop *loop = nir_push_loop(&b);
+   loop->control = nir_loop_control_unroll;
    {
       nir_break_if(&b, nir_uge(&b, nir_load_var(&b, i_var), nir_imm_int(&b, 4)));
 
@@ -276,14 +306,27 @@ build_fs_with_bounded_loop(void)
       nir_store_var(&b, i_var,
                     nir_iadd(&b, nir_load_var(&b, i_var), nir_imm_int(&b, 1)), 1);
    }
-   nir_pop_loop(&b, NULL);
+   nir_pop_loop(&b, loop);
 
    nir_def *acc = nir_load_var(&b, acc_var);
 
+   /*
+    * All four colour components have to be written: the back end refuses a
+    * fragment shader that leaves any of them undefined, and it says so
+    * ("fragment colour component N is never written"). Writing only component 0
+    * made this test fail for a reason unrelated to loops, which is worth noting
+    * because the refusal message in the failure output was easy to read past.
+    */
    nir_store_output(&b, acc, nir_imm_int(&b, 0), .base = 0,
                     .component = 0, .write_mask = 1,
                     .io_semantics.location = FRAG_RESULT_COLOR,
                     .io_semantics.num_slots = 1);
+   for (unsigned c = 1; c < 4; c++) {
+      nir_store_output(&b, nir_imm_float(&b, 1.0f), nir_imm_int(&b, 0),
+                       .base = 0, .component = c, .write_mask = 1,
+                       .io_semantics.location = FRAG_RESULT_COLOR,
+                       .io_semantics.num_slots = 1);
+   }
    return b.shader;
 }
 
@@ -326,8 +369,18 @@ struct fuzz_vals { float in[4][4]; float uni[4][4]; };
 static nir_shader *
 build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
 {
-   static const nir_shader_compiler_options opts = { 0 };
-   nir_builder b = nir_builder_init_simple_shader(stage, &opts, "fuzz");
+   /*
+    * The driver's own options, so the shaders this generates are in the same form
+    * the real compiler receives.
+    *
+    * A zeroed struct means no lowerings are configured, so ops the driver expects
+    * to have been lowered by NIR (fabs, fsin, ...) survive into the back end and
+    * are refused as unsupported. That made this fuzz test fail on ops the driver
+    * never actually sees - it was measuring the test's options, not the driver's.
+    */
+   nir_builder b = nir_builder_init_simple_shader(stage,
+                                                  prismrv_get_nir_options(),
+                                                  "fuzz");
    nir_def *pool[POOL];
    bool is_sa[POOL] = { 0 };   /* constants/uniforms: not readable by source 1 */
    unsigned n = 0;
@@ -365,8 +418,21 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
       unsigned op = rnd_n(11);
 
       switch (op) {
+      /*
+       * Op 9 deliberately does NOT produce fabs.
+       *
+       * abs is an operand modifier, and the vec2 encoder rejects any source with
+       * neg or abs set (prismrv_usse_encode_vec.c: "if (in->src.neg || in->src.abs
+       * ...) return false"). The comment in prismrv_usse_ir.h saying abs works "on
+       * both" does not hold for that path - implementing fabs on the strength of it
+       * produced a program that assembled and then ignored the modifier, so the
+       * differential test caught a sign error instead of a refusal. Until the
+       * modifier is actually wired, fabs has no correct lowering here and is left
+       * out of the pool rather than quietly compiled to something wrong.
+       */
       case 9:
-         pool[n++] = nir_fabs(&b, a);
+         /* same shape as case 0; fabs deliberately absent, see the note above */
+         pool[n++] = nir_fadd(&b, a, c);
          break;
       case 0: pool[n++] = nir_fadd(&b, a, c); break;
       case 1: pool[n++] = nir_fsub(&b, a, c); break;

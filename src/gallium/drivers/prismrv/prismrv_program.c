@@ -521,6 +521,19 @@ prismrv_nir_lower_for_usse(nir_shader *nir)
       NIR_PASS(progress, nir, nir_lower_undef_to_zero, NULL);
       NIR_PASS(progress, nir, nir_opt_peephole_select, &(nir_opt_peephole_select_options){
          .limit = 8, .expensive_alu_ok = true });
+      /*
+       * Loop unrolling has to be *run*, not just configured. Setting
+       * max_unroll_iterations in the compiler options only tells this pass what
+       * it may do; with the pass never called, every loop reached the back end
+       * intact and was refused as control flow. That is why the bounded-loop test
+       * failed in CI while the option looked correctly set.
+       *
+       * This is what makes a bounded loop compile the way the vendor compiler
+       * emits it - the body repeated, no branch opcode (measured through the
+       * oracle). An unbounded loop is left alone and still hits the refusal,
+       * correctly: there is no branch instruction to lower it to.
+       */
+      NIR_PASS(progress, nir, nir_opt_loop_unroll);
    } while (progress);
 
    NIR_PASS(_, nir, nir_opt_algebraic_late);
