@@ -95,6 +95,38 @@ Unit tests: `prismrv_nir_test` executes the generated USSE text on a tiny
 interpreter and checks the numbers; `meson test --suite prismrv` runs the
 EGL smoke/lifecycle tests on the drm-shim.
 
+## Building the driver locally (meson is enough; no full Mesa build needed)
+
+The driver, its winsys and its tests build on their own, which is fast enough to run
+on every change and cheap enough to run on a tmpfs workspace:
+
+    meson setup /tmp/mesabuild -Dgallium-drivers=prismrv -Dllvm=disabled \
+      -Dvulkan-drivers=[] -Dglx=disabled -Dplatforms=[] -Degl=enabled \
+      -Dgles2=enabled -Dtools=drm-shim -Dbuild-tests=true
+    ninja -C /tmp/mesabuild -j2 \
+      src/gallium/drivers/prismrv/libprismrv.a \
+      src/gallium/drivers/prismrv/tests/prismrv_usse_encode_test \
+      src/gallium/drivers/prismrv/tests/prismrv_usse_vec_test \
+      src/gallium/drivers/prismrv/prismrv_nir_test
+
+Measured: the library takes ~12 s at `-j2` and the three test binaries about 110 s
+together on eight cores, with peak free memory unaffected. Naming the targets matters -
+a bare `ninja` builds all of Mesa, which is where the resource cost would come from.
+
+Then:
+
+    ./src/gallium/drivers/prismrv/tests/prismrv_usse_encode_test   # 1559 vectors
+    ./src/gallium/drivers/prismrv/tests/prismrv_usse_vec_test      # 400 + 400
+    ./src/gallium/drivers/prismrv/prismrv_nir_test                 # 600 shaders
+
+`prismrv_nir_test` is the strongest of the three: it compiles 600 shaders through the
+NIR back end and compares 3600 output values against NIR's own constant folding. It had
+never been run in this workspace before meson was available - the encoder tests are the
+only ones that work without it.
+
+meson needs the python `mako`, `pyyaml` and `packaging` modules. Only the *setup* needs
+them, not the compiler itself.
+
 ## Checking the encoders without meson
 
 The two encoder golden tests are self-contained - each needs only
