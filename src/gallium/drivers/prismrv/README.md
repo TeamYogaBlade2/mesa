@@ -155,19 +155,21 @@ sync with `include/uapi/drm/prismrv_drm.h` in the linux tree.
 
 ## CI notes
 
-**Actions is currently disabled on this repository.** `gh workflow run` returns
+Actions was disabled on this repository for a while - `gh workflow run` returned
+`HTTP 422: Actions has been disabled for this repository`, and fourteen commits landed
+with no run at all. It has since been re-enabled by the repo owner; if that happens
+again, `gh run list` showing nothing for your SHA (rather than a red run) is the signal.
 
-    HTTP 422: Actions has been disabled for this repository
+With Actions working, `meson-build` and `syntax-only` both pass on `d3e41f4`. Getting
+there needed two real fixes, both of which had been hiding behind the fact that the
+relevant steps never ran:
 
-and the last run of any kind was on `64e66818` (2026-10-08). Fourteen commits have
-landed since - all present on the remote - with no run at all, because nothing is
-listening. So "push it and let CI build" cannot work until Actions is re-enabled in
-the repository settings; re-enabling is the fix, not a change to the workflow.
+1. `run_stream_validate.sh` could not build its validator at all - `prismrv_drm.h`
+   includes `"drm.h"` and the include path lacked Mesa's `include/drm-uapi`.
+2. `prismrv_test_nir.c` wrote its shader dump in a layout `stream_validate_test.c`
+   cannot read, so the grammar check rejected the first opcode of every program.
 
-This matters for the workflow's own advice below: a *red* run and a *missing* run are
-different problems. The notes on PR-vs-push asymmetry describe a red run; what is
-happening now is no run at all, and `gh run list` showing nothing for your SHA is the
-signal.
+Both are fixed and the check now reports `validated 600 Mesa stream(s)`.
 
 `.github/workflows/prismrv.yml` has two jobs: a full `meson-build` and a
 `syntax-only` pass. The build job's last step checks this driver's emitted command
