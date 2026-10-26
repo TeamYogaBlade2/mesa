@@ -208,6 +208,85 @@ build_fs_with_fsin(void)
    return b.shader;
 }
 
+/*
+ * A fragment shader with a bounded loop, which the random corpus above cannot
+ * generate (it only builds straight-line ALU chains).
+ *
+ * This exists specifically to exercise loop unrolling: the vendor compiler emits
+ * a bounded loop as the body repeated, with no branch opcode, so NIR has to
+ * unroll before the back end sees it. With max_unroll_iterations = 0 the loop
+ * survived into the back end and was refused, which is why this path had never
+ * been run.
+ *
+ * The loop body is a multiply-add so the unrolled result is a value the
+ * differential test can check against NIR's own folding rather than just
+ * "it compiled".
+ */
+static nir_shader *
+build_fs_with_bounded_loop(void)
+{
+   static const nir_shader_compiler_options opts = { 0 };
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, &opts, "prismrv-test-loop");
+   nir_def *x = nir_load_input(&b, 1, 32, nir_imm_int(&b, 0), .base = 0,
+                               .component = 0,
+                               .io_semantics.location = VARYING_SLOT_COL0,
+                               .io_semantics.num_slots = 1);
+
+   /*
+    * A real nir_loop, not a C loop that emits straight-line code: the point is to
+    * exercise *unrolling*, and unrolling only happens to actual control flow.
+    *
+    *     acc = x;
+    *     for (i = 0; i < 4; i++) acc = acc * 0.5 + 0.25;
+    *
+    * The vendor compiler emits exactly this shape as the body four times over,
+    * with no branch opcode (measured through the oracle). With
+    * max_unroll_iterations = 0 NIR left the loop intact, the back end refused it
+    * as control flow, and this path had never run - so the pool of random
+    * straight-line shaders could not have caught a mistake in it.
+    *
+    * The bound and the body are chosen so the answer is checkable in closed form
+    * and does not depend on the unroll order being reproduced exactly:
+    * acc = x * 2^-4 + 0.25 * (1 + 1/2 + 1/4 + 1/8).
+    */
+   /*
+    * Built with a local variable and nir_break_if rather than hand-made phis:
+    * that is the idiom other drivers use, and nir_opt_loop_unroll() has to
+    * recognise the induction variable for unrolling to trigger at all - a phi
+    * arrangement that only looks correct can leave the loop structured in a way
+    * the pass declines, which would make this test silently stop testing anything.
+    */
+   nir_variable *acc_var =
+      nir_local_variable_create(b.impl, glsl_float_type(), "acc");
+   nir_variable *i_var =
+      nir_local_variable_create(b.impl, glsl_uint_type(), "i");
+
+   nir_store_var(&b, acc_var, x, 1);
+   nir_store_var(&b, i_var, nir_imm_int(&b, 0), 1);
+
+   nir_push_loop(&b);
+   {
+      nir_break_if(&b, nir_uge(&b, nir_load_var(&b, i_var), nir_imm_int(&b, 4)));
+
+      nir_def *a = nir_load_var(&b, acc_var);
+      nir_store_var(&b, acc_var,
+                    nir_fadd(&b, nir_fmul(&b, a, nir_imm_float(&b, 0.5f)),
+                             nir_imm_float(&b, 0.25f)), 1);
+      nir_store_var(&b, i_var,
+                    nir_iadd(&b, nir_load_var(&b, i_var), nir_imm_int(&b, 1)), 1);
+   }
+   nir_pop_loop(&b, NULL);
+
+   nir_def *acc = nir_load_var(&b, acc_var);
+
+   nir_store_output(&b, acc, nir_imm_int(&b, 0), .base = 0,
+                    .component = 0, .write_mask = 1,
+                    .io_semantics.location = FRAG_RESULT_COLOR,
+                    .io_semantics.num_slots = 1);
+   return b.shader;
+}
+
 static int
 expect_near(const char *what, uint32_t got, float want)
 {
@@ -943,6 +1022,19 @@ run_native_tests(void)
          ralloc_free(neg[i]);
       }
    }
+
+   /*
+    * 3a. a bounded loop must compile - by being unrolled, the way the vendor
+    * compiler emits it. This is the only case in the file that reaches
+    * nir_opt_loop_unroll(); everything else is straight-line, so without it the
+    * unrolling path would ship untested.
+    */
+   nir = build_fs_with_bounded_loop();
+   if (!prismrv_nir_to_usse_native(nir, bin)) {
+      fprintf(stderr, "FAIL: bounded loop was not unrolled (still control flow?)\n");
+      fail++;
+   }
+   ralloc_free(nir);
 
    /* 3b. constant colour and uniform+uniform compile (no operand restrictions) */
    nir = build_fs_store_const();

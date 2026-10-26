@@ -58,7 +58,19 @@ static const nir_shader_compiler_options prismrv_nir_options = {
    .lower_uadd_carry = true,
    .lower_usub_borrow = true,
    .lower_scmp = true,
-   .max_unroll_iterations = 0,
+   /*
+    * The vendor compiler fully unrolls loops: a 4-iteration loop compiles to the
+    * body emitted four times with no branch opcode at all (measured through the
+    * oracle; see prismrv analysis/NATIVE_USSE_COMPILER.md). Leaving this at 0
+    * meant NIR never unrolled, so any bounded loop reached the back end as control
+    * flow - which it refuses - instead of as straight-line code the vendor would
+    * have produced from the same input.
+    *
+    * Unrolling here does not make loops work in general: an unbounded loop still
+    * hits the refusal, correctly, because the hardware has no branch instruction
+    * to lower it to. It makes the *bounded* case behave like the real compiler.
+    */
+   .max_unroll_iterations = 8,
    .force_indirect_unrolling = 0,
 };
 
