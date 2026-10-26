@@ -330,6 +330,47 @@ build_fs_with_bounded_loop(void)
    return b.shader;
 }
 
+/*
+ * A fragment shader that samples a 2D texture.
+ *
+ * This exists because emit_tex() had no test at all: the only occurrences of
+ * "tex" in this file were the word "texture" in prose. A backend path that
+ * compiles into a shipped stream without ever being run is the exact mistake
+ * this file is meant to prevent, so the guards emit_tex() applies - fragment
+ * stage only, coord-only sources, texture index equal to sampler index,
+ * 2D non-array non-shadow - deserve a case that goes through them.
+ *
+ * The emit is a single `smp` instruction, so the test is that it compiles and
+ * that the text carries the right texture slot rather than a value check:
+ * sampling needs texture state this host test does not have, and inventing one
+ * would be testing the invention.
+ */
+static nir_shader *
+build_fs_with_texture(void)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, prismrv_get_nir_options(), "prismrv-test-tex");
+   nir_def *uv = nir_load_input(&b, 2, 32, nir_imm_int(&b, 0), .base = 0,
+                                .io_semantics.location = VARYING_SLOT_VAR0,
+                                .io_semantics.num_slots = 1);
+   nir_def *tex = nir_tex(&b, uv, .dim = GLSL_SAMPLER_DIM_2D,
+                          .dest_type = nir_type_float32,
+                          .texture_index = 3, .sampler_index = 3);
+
+   /*
+    * One store with a 4-component mask, not four per-component stores: the
+    * source is a vec4, so `component = c` with `write_mask = 1` describes a
+    * scalar store from a vector whose width does not match, and nir_validate
+    * rejects it ("nir_intrinsic_component(instr) + instr->num_components <=
+    * max_num_components").
+    */
+   nir_store_output(&b, tex, nir_imm_int(&b, 0), .base = 0,
+                    .component = 0, .write_mask = 0xf,
+                    .io_semantics.location = FRAG_RESULT_COLOR,
+                    .io_semantics.num_slots = 1);
+   return b.shader;
+}
+
 static int
 expect_near(const char *what, uint32_t got, float want)
 {
@@ -1123,6 +1164,26 @@ run_native_tests(void)
    if (!prismrv_nir_to_usse_native(nir, bin)) {
       fprintf(stderr, "FAIL: bounded loop was not unrolled (still control flow?)\n");
       fail++;
+   }
+   ralloc_free(nir);
+
+   /*
+    * 3a2. a 2D texture sample must compile, and to an `smp` with the slot the
+    * shader asked for. This is the only case that reaches emit_tex(), so without
+    * it that path ships unrun.
+    */
+   nir = build_fs_with_texture();
+   {
+      char *t = prismrv_nir_to_usse(NULL, nir);
+
+      if (!t) {
+         fprintf(stderr, "FAIL: texture sample rejected\n");
+         fail++;
+      } else if (!strstr(t, "smp ") || !strstr(t, "#3")) {
+         fprintf(stderr, "FAIL: texture sample did not emit smp with its slot:\n%s\n", t);
+         fail++;
+      }
+      ralloc_free(t);
    }
    ralloc_free(nir);
 
