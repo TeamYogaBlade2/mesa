@@ -187,6 +187,8 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
    case nir_op_ffma:
    case nir_op_frcp:
    case nir_op_frsq:
+   case nir_op_fmin:
+   case nir_op_fmax:
       break;
    default:
       fail(c, "unsupported NIR ALU op '%s'", info->name);
@@ -236,6 +238,24 @@ emit_alu(struct emit_ctx *c, nir_alu_instr *alu)
          break;
       case nir_op_frsq:
          emit(c, "frsq r%u, r%u", d, src_reg(c, alu, 0, ch));
+         break;
+      case nir_op_fmin:
+      case nir_op_fmax:
+         /*
+          * vmin/vmax from the two-source vector group. These are not a guess:
+          * prismrv_usse_encode_vec.c implements them as sub-opcodes 5 and 6 of
+          * vec2, and tests/prismrv_usse_vec2_golden.inc carries 219 vectors for
+          * them that were each checked against the vendor disassembler.
+          *
+          * The vendor compiler maps min()/max() onto `sop2` instead (measured: a
+          * fragment shader using both emits six sop2), but sop2's f32 semantics
+          * are not established - it is documented as a 10-bit colour op - so
+          * using a verified vector instruction is the honest choice even though
+          * it differs from what the vendor would emit.
+          */
+         emit(c, "%s r%u, r%u, r%u",
+              alu->op == nir_op_fmin ? "vmin" : "vmax", d,
+              src_reg(c, alu, 0, ch), src_reg(c, alu, 1, ch));
          break;
       default:
          UNREACHABLE("filtered above");

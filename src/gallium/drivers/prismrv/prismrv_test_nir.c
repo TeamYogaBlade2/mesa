@@ -283,7 +283,7 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
             unsigned ia = rnd_n(n);
       unsigned ic = rnd_n(n), id = rnd_n(n);
       nir_def *a = pool[ia], *c = pool[ic], *d = pool[id];
-      unsigned op = rnd_n(9);
+      unsigned op = rnd_n(11);
 
       switch (op) {
       case 9:
@@ -296,6 +296,15 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
       case 4: pool[n++] = nir_ffma(&b, a, c, d); break;
       case 5: pool[n++] = nir_frcp(&b, nir_fadd_imm(&b, nir_fmul(&b, a, a), 0.25f)); break;
       case 6: pool[n++] = nir_frsq(&b, nir_fadd_imm(&b, nir_fmul(&b, a, a), 0.25f)); break;
+      /*
+       * fmin/fmax. Worth having in the random pool specifically: they compile to
+       * vmin/vmax, a *different* instruction group from the vmad/vmul forms the
+       * rest of the pool uses, so nothing else in this corpus would exercise
+       * them - adding the op without a test case would let a wrong sub-opcode
+       * ship silently.
+       */
+      case 10: pool[n++] = (rnd_n(2) ? nir_fmin(&b, a, c)
+                                     : nir_fmax(&b, a, c)); break;
       case 7: { /* vector build + swizzle back out */
          nir_def *vec = nir_vec3(&b, a, c, d);
          unsigned idx[3] = { ia, ic, id };
