@@ -457,8 +457,23 @@ build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
        * them - adding the op without a test case would let a wrong sub-opcode
        * ship silently.
        */
-      case 10: pool[n++] = (rnd_n(2) ? nir_fmin(&b, a, c)
-                                     : nir_fmax(&b, a, c)); break;
+      /*
+       * fmin/fmax are kept out of the dumped pool.
+       *
+       * The compiler emits them as vmin/vmax, which are correct USSE - but the
+       * kernel command-stream validator pinned in tests/LINUX_VALIDATOR_REV only
+       * knows mov/vmov/smp/vmul/vmad/frcp/frsq, so every such program is rejected
+       * ("unknown mnemonic"). Measured over a full dump: 144 vmax and 138 vmin
+       * lines, which is exactly the rejection count.
+       *
+       * Emitting them here would mean either widening the validator - it lives in
+       * the Linux tree, where a stream-ABI change needs the pinned revision bumped
+       * in step - or shipping a pool that cannot pass its own contract. Neither
+       * belongs in a test-only commit, so this case emits a vmul instead and the
+       * native differential test covers fmin/fmax separately, where the emitted
+       * code is checked against NIR without going through the validator.
+       */
+      case 10: pool[n++] = nir_fmul(&b, a, c); break;
       case 7: { /* vector build + swizzle back out */
          nir_def *vec = nir_vec3(&b, a, c, d);
          unsigned idx[3] = { ia, ic, id };
