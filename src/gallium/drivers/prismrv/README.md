@@ -57,9 +57,10 @@ above is rejected at compile time rather than approximated.
 (An earlier version of this file claimed rcp/rsq fail.  They do not -
 `prismrv_usse_nir.c` emits `vrcp`/`vrsq` and `prismrv_nir_test` checks the
 numbers against NIR's own constant folding.  Worth re-reading the emit
-switch rather than such notes when checking coverage.)  The register ABI assumptions are listed
-in `prismrv_usse_nir.h`; `prismrv_nir_test` checks the output against NIR's
-own constant folding.
+switch rather than such notes when checking coverage.)
+
+The register ABI assumptions are listed in `prismrv_usse_nir.h`;
+`prismrv_nir_test` checks the output against NIR's own constant folding.
 
 ## Known semantic gaps
 
