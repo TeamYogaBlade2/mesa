@@ -47,9 +47,17 @@ words** (not text) through the verified encoders: plain VMAD
 `create_*_state`; the native result is kept in `prismrv_shader_state::native`
 and printed with `PRISMRV_NATIVE_USSE_DUMP=1`.  It is not yet put in the
 command stream (that needs the stock-uKernel program registration and TA kick
-ABI).  Only what the encoders can express compiles (fadd/fsub/fmul/ffma/
-fneg/fabs/mov, I/O, uniforms, literal constants); control flow, texturing,
-rcp/rsq and the rest fail cleanly.  The register ABI assumptions are listed
+ABI).  Only what the encoders can express compiles: the float ALU set
+(mov/fneg/fabs/fadd/fsub/fmul/fmin/fmax/ffma), the special functions
+frcp/frsq/flog2/fexp2 (as vrcp/vrsq/vlog/vexp), vector construction and
+I/O, uniforms and literal constants.  Control flow and texturing do have
+no verified encoding yet and fail cleanly; everything outside the list
+above is rejected at compile time rather than approximated.
+
+(An earlier version of this file claimed rcp/rsq fail.  They do not -
+`prismrv_usse_nir.c` emits `vrcp`/`vrsq` and `prismrv_nir_test` checks the
+numbers against NIR's own constant folding.  Worth re-reading the emit
+switch rather than such notes when checking coverage.)  The register ABI assumptions are listed
 in `prismrv_usse_nir.h`; `prismrv_nir_test` checks the output against NIR's
 own constant folding.
 
@@ -85,6 +93,29 @@ Build with meson (from a Mesa checkout):
 Unit tests: `prismrv_nir_test` executes the generated USSE text on a tiny
 interpreter and checks the numbers; `meson test --suite prismrv` runs the
 EGL smoke/lifecycle tests on the drm-shim.
+
+## Checking the encoders without meson
+
+The two encoder golden tests are self-contained - each needs only
+`prismrv_usse_encode.c` / `prismrv_usse_encode_vec.c` and a C compiler, so
+they can be built and run in a tree that has no meson (which is the normal
+state of this workspace):
+
+    cd src/gallium/drivers/prismrv/tests
+    clang -O1 -o /tmp/enc prismrv_usse_encode_test.c ../prismrv_usse_encode.c
+    /tmp/enc                      # 1559 golden vectors
+    clang -O1 -o /tmp/vec prismrv_usse_vec_test.c \
+          ../prismrv_usse_encode.c ../prismrv_usse_encode_vec.c
+    /tmp/vec                      # 400 vec2 + 400 vmov vectors
+
+Both print `PASS` and a vector count.  Run these after touching either
+encoder; they catch a wrong bit position immediately, which is the class of
+bug that otherwise shows up as a shader computing garbage on hardware.
+
+`tests/run_stream_validate.sh` needs the kernel-side validator
+(`drivers/gpu/drm/prismrv/prismrv_stream.c` from the linux tree) and cannot
+run here - that driver lives on a branch this workspace does not check out.
+
 
 `drm-uapi/prismrv_drm.h` is a copy of the kernel uAPI header; keep it in
 sync with `include/uapi/drm/prismrv_drm.h` in the linux tree.
