@@ -370,17 +370,26 @@ static nir_shader *
 build_random(mesa_shader_stage stage, struct fuzz_vals *v, bool native)
 {
    /*
-    * The driver's own options, so the shaders this generates are in the same form
-    * the real compiler receives.
+    * Two option sets, chosen by what the caller needs - not one shared choice.
     *
-    * A zeroed struct means no lowerings are configured, so ops the driver expects
-    * to have been lowered by NIR (fabs, fsin, ...) survive into the back end and
-    * are refused as unsupported. That made this fuzz test fail on ops the driver
-    * never actually sees - it was measuring the test's options, not the driver's.
+    * The fuzz pool's programs are dumped (PRISMRV_PROG_DUMP) and fed to the
+    * kernel's command-stream validator in CI, which is the security contract for
+    * the render node. Giving that path the driver's real options made the
+    * lowerings expand into instruction forms the pool never produced before, and
+    * the validator rejected 214 of them. Those forms may well be fine, but they
+    * are unverified, and a test change must not quietly widen what the driver
+    * emits into the validator. So this path stays on empty options, where every op
+    * the pool generates is one the emitter has an explicit case for.
+    *
+    * The native differential test is the opposite case: it must see shaders in the
+    * form the real compiler receives, or ops the driver expects NIR to have
+    * lowered (flrp, ...) reach the back end and are refused. It therefore gets
+    * prismrv_get_nir_options().
     */
-   nir_builder b = nir_builder_init_simple_shader(stage,
-                                                  prismrv_get_nir_options(),
-                                                  "fuzz");
+   static const nir_shader_compiler_options empty_opts = { 0 };
+   const nir_shader_compiler_options *opts =
+      native ? prismrv_get_nir_options() : &empty_opts;
+   nir_builder b = nir_builder_init_simple_shader(stage, opts, "fuzz");
    nir_def *pool[POOL];
    bool is_sa[POOL] = { 0 };   /* constants/uniforms: not readable by source 1 */
    unsigned n = 0;
