@@ -64,7 +64,21 @@ int main(int argc, char **argv)
       u32 *st;
       size_t words;
 
-      CHECK(hdr[0] == 0x52545350u && hdr[2] <= 16, "dump header");
+      /*
+       * A bad header means the reader has lost its place, so stop rather than
+       * continuing: once desynced, every later read is garbage and the CHECK
+       * macro's continue-on-failure turns one real problem into tens of thousands
+       * of "FAIL: dump header" lines. That is what made one failing run look
+       * catastrophic while an identical run on the same commit passed - the number
+       * of lines depended on where the bad record happened to land, not on how
+       * much was wrong.
+       */
+      if (hdr[0] != 0x52545350u || hdr[2] > 16) {
+         fprintf(stderr, "FAIL: dump header at record %u "
+                 "(magic 0x%08x, %u bos) - dump is truncated or desynced\n",
+                 n, hdr[0], hdr[2]);
+         return 1;
+      }
       for (unsigned i = 0; i < hdr[2]; i++) {
          uint32_t rec[2];
          if (fread(rec, 4, 2, f) != 2) return 1;
