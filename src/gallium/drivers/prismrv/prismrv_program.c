@@ -522,18 +522,30 @@ prismrv_nir_lower_for_usse(nir_shader *nir)
       NIR_PASS(progress, nir, nir_opt_peephole_select, &(nir_opt_peephole_select_options){
          .limit = 8, .expensive_alu_ok = true });
       /*
-       * Loop unrolling has to be *run*, not just configured. Setting
-       * max_unroll_iterations in the compiler options only tells this pass what
-       * it may do; with the pass never called, every loop reached the back end
-       * intact and was refused as control flow. That is why the bounded-loop test
-       * failed in CI while the option looked correctly set.
+       * Loop unrolling has to be *run*, not just configured: max_unroll_iterations
+       * only tells this pass what it may do, and with the pass never called every
+       * loop reached the back end intact and was refused as control flow.
        *
-       * This is what makes a bounded loop compile the way the vendor compiler
-       * emits it - the body repeated, no branch opcode (measured through the
-       * oracle). An unbounded loop is left alone and still hits the refusal,
-       * correctly: there is no branch instruction to lower it to.
+       * Gated on the shader actually containing a loop. Run unconditionally it also
+       * rewrites straight-line programs, and those programs are the ones dumped for
+       * the kernel's command-stream validator in CI - which then rejected 214 of
+       * them. A pass that cannot help a shader has no business changing its
+       * instruction stream, especially when that stream is a security contract.
        */
-      NIR_PASS(progress, nir, nir_opt_loop_unroll);
+      {
+         bool has_loop = false;
+
+         nir_foreach_function_impl(impl_scan, nir) {
+            nir_foreach_block(block_scan, impl_scan) {
+               nir_cf_node *next = nir_cf_node_next(&block_scan->cf_node);
+
+               if (next && next->type == nir_cf_node_loop)
+                  has_loop = true;
+            }
+         }
+         if (has_loop)
+            NIR_PASS(progress, nir, nir_opt_loop_unroll);
+      }
    } while (progress);
 
    NIR_PASS(_, nir, nir_opt_algebraic_late);
