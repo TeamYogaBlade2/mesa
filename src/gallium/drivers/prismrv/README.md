@@ -123,6 +123,20 @@ sync with `include/uapi/drm/prismrv_drm.h` in the linux tree.
 
 ## CI notes
 
+**Actions is currently disabled on this repository.** `gh workflow run` returns
+
+    HTTP 422: Actions has been disabled for this repository
+
+and the last run of any kind was on `64e66818` (2026-10-08). Fourteen commits have
+landed since - all present on the remote - with no run at all, because nothing is
+listening. So "push it and let CI build" cannot work until Actions is re-enabled in
+the repository settings; re-enabling is the fix, not a change to the workflow.
+
+This matters for the workflow's own advice below: a *red* run and a *missing* run are
+different problems. The notes on PR-vs-push asymmetry describe a red run; what is
+happening now is no run at all, and `gh run list` showing nothing for your SHA is the
+signal.
+
 `.github/workflows/prismrv.yml` has two jobs: a full `meson-build` and a
 `syntax-only` pass. The build job's last step checks this driver's emitted command
 stream against the kernel validator, which means it has to fetch
