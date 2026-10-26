@@ -441,14 +441,26 @@ run_differential(void)
          /* one SET_PROG packet per program, in the drm-shim dump format,
           * so the kernel's grammar check can be run over them */
          size_t len = strlen(usse), words = (len + 4) / 4;
-         uint32_t hdr[3] = { 0x52545350u, (uint32_t)(8 + words * 4), 0 };
+         /*
+          * The drm-shim dump format is
+          *
+          *     PSTR | stream_bytes | num_bos | {va,size,contents}* | stream
+          *
+          * so the whole payload here is one SET_PROG command packet followed by
+          * the USSE text, and num_bos is 0 because a shader-text grammar check
+          * needs no buffers. The packet is part of the stream, not a header
+          * outside it - writing it between the header and the stream (which is
+          * what this did) makes the validator read the packet as the first two
+          * stream words and reject the program's opcode.
+          */
          uint32_t pk[2] = { stage == MESA_SHADER_VERTEX ? 2u : 3u, (uint32_t)words };
-         char *pad = calloc(1, words * 4);
+         uint32_t hdr[3] = { 0x52545350u, (uint32_t)(8 + words * 4), 0 };
+         char *pad = calloc(1, 8 + words * 4);
 
-         memcpy(pad, usse, len);
+         memcpy(pad, pk, 8);
+         memcpy(pad + 8, usse, len);
          fwrite(hdr, 4, 3, dump);
-         fwrite(pk, 4, 2, dump);
-         fwrite(pad, 1, words * 4, dump);
+         fwrite(pad, 1, 8 + words * 4, dump);
          free(pad);
       }
       if (!have_ref) {
