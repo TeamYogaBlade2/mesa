@@ -37,6 +37,8 @@ bool prismrv_usse_decode_vpck(uint64_t word, struct prismrv_usse_vpck *out);
 bool prismrv_usse_encode_vrcp(const struct prismrv_usse_vrcp *in, uint64_t *out);
 bool prismrv_usse_decode_vrcp(uint64_t word, struct prismrv_usse_vrcp *out);
 
+bool prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out);
+
 /* index (0..7) of @swz among source slot @slot's (1..3) presets, or -1 */
 int prismrv_usse_swizzle_preset(unsigned slot, const char swz[4]);
 

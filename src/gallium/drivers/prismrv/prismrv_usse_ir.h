@@ -101,6 +101,40 @@ struct prismrv_usse_vec2 {
 };
 
 /*
+ * The test group (opcode [63:59] = 0b01001): an ALU operation whose result is
+ * tested and written to a predicate rather than to a register.  This is how the
+ * hardware forms a comparison - the vendor compiler emits vf16sub with a test
+ * condition for "a < b" and the like.
+ *
+ * Every field here was measured by sweeping a word the uKernel itself contains
+ * (0x48090181200C0188 = "and.testtaz.chan0 !c0, p0, r3, #8") and confirming
+ * that the encoder reproduces it plus three further forms; see
+ * analysis/NATIVE_USSE_COMPILER.md, "Test-group encoding".
+ */
+enum prismrv_usse_test_op {
+   PRISMRV_USSE_TEST_VF16SUB = 14,   /* what the vendor uses for float compares */
+   PRISMRV_USSE_TEST_AND = 48,
+};
+
+enum prismrv_usse_test_cond {
+   PRISMRV_USSE_TEST_TAZ = 3,        /* result == 0  -> feq */
+   PRISMRV_USSE_TEST_TANZ = 5,       /* result != 0  -> fne */
+   PRISMRV_USSE_TEST_NAZ = 11,       /* result <= 0  -> fle */
+   PRISMRV_USSE_TEST_NANZ = 13,      /* result <  0  -> flt */
+   PRISMRV_USSE_TEST_PAZ = 19,       /* result >= 0  -> fge */
+   PRISMRV_USSE_TEST_PANZ = 21,      /* result >  0  -> fgt */
+};
+
+struct prismrv_usse_test {
+   uint8_t op;               /* enum prismrv_usse_test_op */
+   uint8_t cond;             /* enum prismrv_usse_test_cond */
+   uint8_t chan;             /* 0..2 -> chan0..chan2 */
+   uint8_t dst_pred;         /* 0..2 -> p0..p2 */
+   unsigned src1;            /* register number in bank r */
+   unsigned imm;             /* immediate second operand */
+};
+
+/*
  * vmov: copy.  Register numbers are NOT doubled here (r0, r1, r2, ...).
  * Only the plain integer types are verified: .i32 is the bit-exact 32-bit
  * move used for register copies and constant/uniform forwarding.

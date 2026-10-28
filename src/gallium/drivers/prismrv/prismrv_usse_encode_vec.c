@@ -599,3 +599,43 @@ prismrv_usse_decode_vrcp(uint64_t w, struct prismrv_usse_vrcp *out)
    *out = d;
    return true;
 }
+
+/*
+ * The test group: an ALU operation whose result is tested into a predicate
+ * instead of being written to a register.
+ *
+ * Verified against the vendor disassembler by reproducing a word the uKernel
+ * contains and three further forms (analysis/NATIVE_USSE_COMPILER.md,
+ * "Test-group encoding"):
+ *
+ *   op 48/cond 3  -> "and.testtaz.chan0 !c0, p0, r3, #8"  (= 0x48090181200C0188)
+ *   op 14/cond 13 -> "vf16sub.testnanz.chan0 !c0, p0, r6, #8"   (the flt compare)
+ *   op 14/cond 19 -> "vf16sub.testpaz.chan0 !c0, p0, r10, #8"  (fge)
+ *   op 48/cond 5, chan1, p1 -> "and.testtanz.chan1 !c0, p1, r7, #9"
+ *
+ * The two-bit pairs are the parts a single-bit sweep cannot show: the immediate
+ * second operand is bits 48|29, and addressing the condition operand in the c
+ * bank is bits 32|51.  Both were found by diffing a hand-built word against the
+ * uKernel's and then confirming the combination on other instructions.
+ */
+bool
+prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out)
+{
+   uint64_t w;
+
+   if (in->op > 63 || in->cond > 21 || in->chan > 2 || in->dst_pred > 2 ||
+       in->src1 > 127 || in->imm > 127)
+      return false;
+
+   w = (uint64_t)9 << 59;             /* instruction group */
+   w |= (uint64_t)in->op << 14;
+   w |= (uint64_t)in->cond << 39;
+   w |= (uint64_t)in->chan << 36;
+   w |= (uint64_t)in->dst_pred << 34;
+   w |= (uint64_t)in->src1 << 7;
+   w |= (uint64_t)in->imm;
+   w |= BIT64(48) | BIT64(29);        /* second source: immediate form */
+   w |= BIT64(32) | BIT64(51);        /* condition operand: c bank */
+   *out = w;
+   return true;
+}
