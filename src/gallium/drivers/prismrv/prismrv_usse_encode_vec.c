@@ -641,3 +641,50 @@ prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out)
    *out = w;
    return true;
 }
+
+/*
+ * The sampler group.
+ *
+ * Field layout measured by sweeping the vendor compiler's own word
+ * 0xE000000000090000 ("smp1d r0, r72, r0, drc0"):
+ *
+ *   [63:59] group (0b11100), [43:42] 1d/2d/3d, [27:21] destination,
+ *   [20:16] coordinate / 8, [33:32] drc, [31:30] destination bank (o/pa),
+ *   [39] destination in pa, [58:56] predicate, [52]/[54]/[55] the usual flags.
+ *
+ * The third operand the disassembler prints (r0 above) has no field here that
+ * a sweep attributably moves, so it is emitted as zero; what it means is
+ * recorded as unknown rather than invented.
+ */
+bool
+prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out)
+{
+   uint64_t w = (uint64_t)0x1c << 59;
+   unsigned pb;
+
+   if (in->dim < 1 || in->dim > 3 || in->drc > 2 || (in->flags & ~7u) ||
+       in->dst > 127 || (in->coord & 7u) || in->coord > 127 ||
+       !pred_to_bits(in->pred, false, &pb))
+      return false;
+   if (in->dst_bank != PRISMRV_USSE_BANK_R &&
+       in->dst_bank != PRISMRV_USSE_BANK_PA)
+      return false;
+
+   if (in->dim == 2)
+      w |= BIT64(42);
+   else if (in->dim == 3)
+      w |= BIT64(43);
+   w |= (uint64_t)in->dst << 21;
+   w |= (uint64_t)(in->coord / 8) << 16;
+   w |= (uint64_t)in->drc << 32;
+   /* bit 39 moves the destination to pa; [31:30] belong to the third operand the
+    * disassembler prints, whose meaning is not established, so only r and pa are
+    * offered here and an output-bank destination is refused above. */
+   if (in->dst_bank == PRISMRV_USSE_BANK_PA) w |= BIT64(39);
+   w |= (uint64_t)pb << 56;
+   if (in->flags & PRISMRV_USSE_FLAG_NOSCHED) w |= BIT64(54);
+   if (in->flags & PRISMRV_USSE_FLAG_SYNCS)   w |= BIT64(52);
+   if (in->flags & PRISMRV_USSE_FLAG_SKIPINV) w |= BIT64(55);
+   *out = w;
+   return true;
+}

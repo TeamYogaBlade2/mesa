@@ -111,6 +111,26 @@ struct prismrv_usse_vec2 {
 };
 
 /*
+ * The sampler group (opcode [63:59] = 0b11100): a texture fetch.  The field
+ * layout below was measured by sweeping a word the vendor compiler itself
+ * emitted (0xE000000000090000 = "smp1d r0, r72, r0, drc0"), so the encoder is
+ * checked against real compiler output and not only against the disassembler.
+ *
+ * The coordinate is a 128-bit register group, addressed in units of eight
+ * registers (bit 16 is r8, bit 20 is r128), which is the same alignment the
+ * attribute registers use.  The destination is not scaled.
+ */
+struct prismrv_usse_smp {
+   uint8_t dim;              /* 1, 2 or 3 -> smp1d/smp2d/smp3d */
+   uint8_t drc;              /* 0..2 -> drc0..drc2 */
+   uint8_t pred;             /* enum prismrv_usse_pred */
+   uint8_t dst_bank;         /* enum prismrv_usse_bank: r, o or pa */
+   uint8_t flags;
+   unsigned dst;             /* 0..127 */
+   unsigned coord;           /* register number, multiple of 8 */
+};
+
+/*
  * The test group (opcode [63:59] = 0b01001): an ALU operation whose result is
  * tested and written to a predicate rather than to a register.  This is how the
  * hardware forms a comparison - the vendor compiler emits vf16sub with a test
