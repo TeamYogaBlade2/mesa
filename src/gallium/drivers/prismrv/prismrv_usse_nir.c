@@ -175,9 +175,10 @@ emit_vec2(struct ctx *c, unsigned op, struct loc dst, struct opnd s1,
 }
 
 static bool
-emit_vmov(struct ctx *c, struct loc dst, struct loc src)
+emit_vmov_pred(struct ctx *c, struct loc dst, struct loc src, uint8_t pred)
 {
-   struct prismrv_usse_vmov in = { .type = PRISMRV_USSE_MOV_I32, .repeat = 1 };
+   struct prismrv_usse_vmov in = { .type = PRISMRV_USSE_MOV_I32, .repeat = 1,
+                                   .pred = pred };
    uint64_t w;
 
    if (c->failed)
@@ -199,6 +200,54 @@ emit_vmov(struct ctx *c, struct loc dst, struct loc src)
    }
    c->out->code[c->out->num_words++] = w;
    return true;
+}
+
+static bool
+emit_vmov(struct ctx *c, struct loc dst, struct loc src)
+{
+   return emit_vmov_pred(c, dst, src, PRISMRV_USSE_PRED_NONE);
+}
+
+/*
+ * Emit a comparison: vf16sub with a test condition, writing p0.
+ *
+ * "a < b" is the difference tested for negative-and-non-zero; the condition values are the ones
+ * measured by sweeping the field (analysis/NATIVE_USSE_COMPILER.md, "Test-group encoding").
+ */
+static bool
+emit_compare(struct ctx *c, struct loc a, struct loc b, unsigned cond)
+{
+   struct prismrv_usse_test in = { .op = PRISMRV_USSE_TEST_VF16SUB,
+                                   .cond = cond, .chan = 0, .dst_pred = 0,
+                                   .src1 = loc_base(a), .src2 = loc_base(b),
+                                   .imm_form = false };
+   uint64_t w;
+
+   if (c->failed)
+      return false;
+   if (c->out->num_words >= PRISMRV_USSE_MAX_WORDS) {
+      fail(c, "shader exceeds %u instructions", PRISMRV_USSE_MAX_WORDS);
+      return false;
+   }
+   if (!prismrv_usse_encode_test(&in, &w)) {
+      fail(c, "internal: comparison not encodable");
+      return false;
+   }
+   c->out->code[c->out->num_words++] = w;
+   return true;
+}
+
+/* the test condition for a comparison op, or 0 when @op is not one */
+static unsigned
+compare_condition(nir_op op)
+{
+   switch (op) {
+   case nir_op_flt: return PRISMRV_USSE_TEST_NANZ;   /* a - b <  0 */
+   case nir_op_fge: return PRISMRV_USSE_TEST_PAZ;    /* a - b >= 0 */
+   case nir_op_feq: return PRISMRV_USSE_TEST_TAZ;    /* a - b == 0 */
+   case nir_op_fneu: return PRISMRV_USSE_TEST_TANZ;   /* a - b != 0 */
+   default: return 0;
+   }
 }
 
 static bool
@@ -329,6 +378,7 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
    case nir_op_frsq:
    case nir_op_flog2:
    case nir_op_fexp2:
+   case nir_op_bcsel:
       break;
    default:
       fail(c, "unsupported NIR ALU op '%s' (no verified USSE form yet)",
@@ -352,6 +402,33 @@ emit_alu(struct ctx *c, nir_alu_instr *alu)
          if (c->failed)
             return;
       }
+      if (alu->op == nir_op_bcsel) {
+         /*
+          * A select is the predicate the comparison wrote plus two predicated copies.  The
+          * comparison is emitted here rather than where its own instruction appears, because the
+          * emitter only models p0: emitting it inline means nothing can clobber it between the test
+          * and the select.  A comparison whose result is used any other way still fails the compile
+          * rather than producing a value.
+          */
+         nir_alu_instr *cmp = nir_def_as_alu(alu->src[0].src.ssa);
+         unsigned cond = cmp ? compare_condition(cmp->op) : 0;
+
+         if (!cond) {
+            fail(c, "select whose condition is not a supported comparison");
+            return;
+         }
+         if (!emit_compare(c, src_loc(c, cmp, 0, ch), src_loc(c, cmp, 1, ch), cond))
+            return;
+         d = alloc_temp(c);
+         if (c->failed)
+            return;
+         if (!emit_vmov_pred(c, d, src_loc(c, alu, 1, ch), PRISMRV_USSE_PRED_P0) ||
+             !emit_vmov_pred(c, d, src_loc(c, alu, 2, ch), PRISMRV_USSE_PRED_NOT_P0))
+            return;
+         set_loc(c, &alu->def, ch, d);
+         continue;
+      }
+
       d = alloc_temp(c);
       if (c->failed)
          return;

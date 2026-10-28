@@ -27,6 +27,7 @@ enum prismrv_usse_bank {
    PRISMRV_USSE_BANK_I,    /* internal registers i0..i3 */
    PRISMRV_USSE_BANK_C,    /* hardware constants c0..c63 (vec2-group sources only; 1:1 numbering) */
    PRISMRV_USSE_BANK_IMM,  /* immediate/constant table #0..#63 (vec2-group sources only; 1:1) */
+   PRISMRV_USSE_BANK_P,    /* predicate p0..p2: where a comparison result lives */
 };
 
 #define PRISMRV_USSE_FLAG_NOSCHED  (1u << 0)
@@ -38,6 +39,13 @@ enum prismrv_usse_pred {
    PRISMRV_USSE_PRED_NONE,
    PRISMRV_USSE_PRED_P0,
    PRISMRV_USSE_PRED_NOT_P0,
+   /* p1/p2 and their negations: the test group writes any of p0..p2 (bits [35:34]), and the
+    * execution predicate field [58:56] takes the same set.  Measured in the same sweep as the
+    * rest of the test group; see analysis/NATIVE_USSE_COMPILER.md. */
+   PRISMRV_USSE_PRED_P1,
+   PRISMRV_USSE_PRED_NOT_P1,
+   PRISMRV_USSE_PRED_P2,
+   PRISMRV_USSE_PRED_NOT_P2,
 };
 
 #define PRISMRV_USSE_MASK_X  (1u << 0)
