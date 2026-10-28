@@ -545,6 +545,37 @@ emit_intrinsic(struct ctx *c, nir_intrinsic_instr *intr, mesa_shader_stage stage
       break;
    }
 
+   case nir_intrinsic_ddx:
+   case nir_intrinsic_ddx_fine:
+   case nir_intrinsic_ddy:
+   case nir_intrinsic_ddy_fine: {
+      const nir_def *src = intr->src[0].ssa;
+      unsigned n = intr->def.num_components;
+      unsigned op = (intr->intrinsic == nir_intrinsic_ddx ||
+                     intr->intrinsic == nir_intrinsic_ddx_fine)
+                    ? PRISMRV_USSE_VDSX : PRISMRV_USSE_VDSY;
+
+      if (intr->def.bit_size != 32) {
+         fail(c, "non-32-bit derivative");
+         return;
+      }
+      for (unsigned ch = 0; ch < n && !c->failed; ch++) {
+         struct loc a = c->locs[src->index * 4 + ch], d;
+
+         if (!a.valid) {
+            fail(c, "internal: derivative of an undefined source");
+            return;
+         }
+         d = alloc_temp(c);
+         if (c->failed)
+            return;
+         if (!emit_vec2(c, op, d, plain(a), plain(a)))
+            return;
+         set_loc(c, &intr->def, ch, d);
+      }
+      break;
+   }
+
    case nir_intrinsic_load_uniform: {
       unsigned off, first;
       unsigned n = intr->def.num_components;
