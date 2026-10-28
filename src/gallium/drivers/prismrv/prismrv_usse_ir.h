@@ -127,7 +127,8 @@ struct prismrv_usse_smp {
    uint8_t dst_bank;         /* enum prismrv_usse_bank: r, o or pa */
    uint8_t flags;
    unsigned dst;             /* 0..127 */
-   unsigned coord;           /* register number, multiple of 8 */
+   unsigned coord;           /* even register number: [20:14] holds coord/2 */
+   unsigned desc;            /* even register number: the third operand, [13:7] */
 };
 
 /*

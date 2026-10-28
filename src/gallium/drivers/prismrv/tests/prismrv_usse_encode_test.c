@@ -139,29 +139,29 @@ main(void)
       uint64_t w;
       struct prismrv_usse_smp s = { .dim = 1, .drc = 0, .pred = PRISMRV_USSE_PRED_NONE,
                                     .dst_bank = PRISMRV_USSE_BANK_R, .dst = 0,
-                                    .coord = 72 };
+                                    .coord = 72, .desc = 0 };
 
       CHECK(prismrv_usse_encode_smp(&s, &w), "smp1d rejected");
       CHECK(w == UINT64_C(0xE000000000090000),
             "vendor smp1d word: got %016" PRIx64, w);
 
-      s.dim = 2; s.dst = 8; s.coord = 0; s.drc = 1;
+      s.dim = 2; s.dst = 8; s.coord = 0; s.drc = 1; s.desc = 0;
       CHECK(prismrv_usse_encode_smp(&s, &w), "smp2d rejected");
       CHECK(w == UINT64_C(0xE000040101000000),
             "smp2d r8, r0, drc1: got %016" PRIx64, w);
 
       s = (struct prismrv_usse_smp){ .dim = 3, .drc = 2, .dst_bank = PRISMRV_USSE_BANK_PA,
-                                     .dst = 127, .coord = 120 };
+                                     .dst = 127, .coord = 120, .desc = 2 };
       CHECK(prismrv_usse_encode_smp(&s, &w), "smp3d rejected");
-      CHECK(w == UINT64_C(0xE00008820FEF0000),
-            "smp3d pa127, r120, drc2: got %016" PRIx64, w);
+      CHECK(w == UINT64_C(0xE00008820FEF0080),
+            "smp3d pa127, r120, r2, drc2: got %016" PRIx64, w);
 
       s = (struct prismrv_usse_smp){ .dim = 0, .dst_bank = PRISMRV_USSE_BANK_R };
       CHECK(!prismrv_usse_encode_smp(&s, &w), "dimension 0 accepted");
       s.dim = 4;
       CHECK(!prismrv_usse_encode_smp(&s, &w), "dimension 4 accepted");
-      s.dim = 1; s.coord = 4;
-      CHECK(!prismrv_usse_encode_smp(&s, &w), "unaligned coordinate accepted");
+      s.dim = 1; s.coord = 3;
+      CHECK(!prismrv_usse_encode_smp(&s, &w), "odd coordinate accepted");
       s.coord = 0; s.drc = 3;
       CHECK(!prismrv_usse_encode_smp(&s, &w), "drc3 accepted");
       s.drc = 0; s.dst_bank = PRISMRV_USSE_BANK_SA;

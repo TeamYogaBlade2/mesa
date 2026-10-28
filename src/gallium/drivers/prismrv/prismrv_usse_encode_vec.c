@@ -649,7 +649,7 @@ prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out)
  * 0xE000000000090000 ("smp1d r0, r72, r0, drc0"):
  *
  *   [63:59] group (0b11100), [43:42] 1d/2d/3d, [27:21] destination,
- *   [20:16] coordinate / 8, [33:32] drc, [31:30] destination bank (o/pa),
+ *   [20:14] coordinate / 2, [13:7] third operand / 2, [33:32] drc,
  *   [39] destination in pa, [58:56] predicate, [52]/[54]/[55] the usual flags.
  *
  * The third operand the disassembler prints (r0 above) has no field here that
@@ -663,7 +663,8 @@ prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out)
    unsigned pb;
 
    if (in->dim < 1 || in->dim > 3 || in->drc > 2 || (in->flags & ~7u) ||
-       in->dst > 127 || (in->coord & 7u) || in->coord > 127 ||
+       in->dst > 127 || (in->coord & 1u) || in->coord > 254 ||
+       (in->desc & 1u) || in->desc > 254 ||
        !pred_to_bits(in->pred, false, &pb))
       return false;
    if (in->dst_bank != PRISMRV_USSE_BANK_R &&
@@ -675,7 +676,10 @@ prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out)
    else if (in->dim == 3)
       w |= BIT64(43);
    w |= (uint64_t)in->dst << 21;
-   w |= (uint64_t)(in->coord / 8) << 16;
+   /* the coordinate and the third operand are both addressed in steps of two
+    * registers: [20:14] and [13:7] hold register/2 */
+   w |= (uint64_t)(in->coord / 2) << 14;
+   w |= (uint64_t)(in->desc / 2) << 7;
    w |= (uint64_t)in->drc << 32;
    /* bit 39 moves the destination to pa; [31:30] belong to the third operand the
     * disassembler prints, whose meaning is not established, so only r and pa are
