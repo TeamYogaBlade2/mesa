@@ -624,7 +624,7 @@ prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out)
    uint64_t w;
 
    if (in->op > 63 || in->cond > 21 || in->chan > 2 || in->dst_pred > 2 ||
-       in->src1 > 127 || in->imm > 127)
+       in->src1 > 127 || in->src2 > 127)
       return false;
 
    w = (uint64_t)9 << 59;             /* instruction group */
@@ -633,8 +633,9 @@ prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out)
    w |= (uint64_t)in->chan << 36;
    w |= (uint64_t)in->dst_pred << 34;
    w |= (uint64_t)in->src1 << 7;
-   w |= (uint64_t)in->imm;
-   w |= BIT64(48) | BIT64(29);        /* second source: immediate form */
+   w |= (uint64_t)in->src2;
+   if (in->imm_form)
+      w |= BIT64(48) | BIT64(29);     /* second source: immediate form */
    w |= BIT64(32) | BIT64(51);        /* condition operand: c bank */
    *out = w;
    return true;

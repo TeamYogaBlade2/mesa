@@ -131,7 +131,8 @@ struct prismrv_usse_test {
    uint8_t chan;             /* 0..2 -> chan0..chan2 */
    uint8_t dst_pred;         /* 0..2 -> p0..p2 */
    unsigned src1;            /* register number in bank r */
-   unsigned imm;             /* immediate second operand */
+   unsigned src2;            /* register number, or the immediate when imm_form */
+   bool imm_form;
 };
 
 /*
