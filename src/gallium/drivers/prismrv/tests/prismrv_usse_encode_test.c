@@ -6,6 +6,7 @@
  * (generated and checked against the vendor disassembler in the prismrv
  * repository); no vendor code or shader binary is involved.
  */
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -78,6 +79,59 @@ main(void)
    CHECK(!prismrv_usse_decode_vmad(UINT64_C(1) << 59, &i), "vmul decoded as vmad");
    CHECK(!prismrv_usse_decode_vmad(UINT64_C(1) << 48, &i), "indexed source decoded");
    CHECK(!prismrv_usse_decode_vmad(UINT64_C(1) << 41, &i), "unknown bit decoded");
+
+   /* ---- test group (comparisons): every word below was disassembled by the vendor
+    * disassembler and prints exactly the instruction described here ---- */
+   {
+      uint64_t w;
+      struct prismrv_usse_test t = { .op = PRISMRV_USSE_TEST_AND,
+                                     .cond = PRISMRV_USSE_TEST_TAZ, .chan = 0,
+                                     .dst_pred = 0, .src1 = 3, .src2 = 8,
+                                     .imm_form = true };
+
+      CHECK(prismrv_usse_encode_test(&t, &w), "test instruction rejected");
+      CHECK(w == UINT64_C(0x48090181200C0188),
+            "and.testtaz.chan0: got %016" PRIx64, w);
+
+      t = (struct prismrv_usse_test){ .op = PRISMRV_USSE_TEST_VF16SUB,
+                                      .cond = PRISMRV_USSE_TEST_NANZ, .chan = 0,
+                                      .dst_pred = 0, .src1 = 4, .src2 = 6,
+                                      .imm_form = false };
+      CHECK(prismrv_usse_encode_test(&t, &w), "register-form compare rejected");
+      CHECK(w == UINT64_C(0x4808068100038206),
+            "vf16sub.testnanz r8, r12: got %016" PRIx64, w);
+
+      t = (struct prismrv_usse_test){ .op = PRISMRV_USSE_TEST_VF16SUB,
+                                      .cond = PRISMRV_USSE_TEST_NANZ, .chan = 0,
+                                      .dst_pred = 0, .src1 = 4, .src2 = 8,
+                                      .imm_form = true };
+      CHECK(prismrv_usse_encode_test(&t, &w), "immediate-form compare rejected");
+      CHECK(w == UINT64_C(0x4809068120038208),
+            "vf16sub.testnanz #8: got %016" PRIx64, w);
+
+      t = (struct prismrv_usse_test){ .op = PRISMRV_USSE_TEST_AND,
+                                      .cond = PRISMRV_USSE_TEST_TANZ, .chan = 1,
+                                      .dst_pred = 1, .src1 = 7, .src2 = 9,
+                                      .imm_form = true };
+      CHECK(prismrv_usse_encode_test(&t, &w), "channel/predicate form rejected");
+      CHECK(w == UINT64_C(0x48090295200C0389),
+            "and.testtanz.chan1 p1: got %016" PRIx64, w);
+   }
+
+   {
+      struct prismrv_usse_test t = { .op = 64, .cond = 3, .chan = 0 };
+      uint64_t w;
+
+      CHECK(!prismrv_usse_encode_test(&t, &w), "opcode 64 accepted");
+      t = (struct prismrv_usse_test){ .op = 14, .cond = 22 };
+      CHECK(!prismrv_usse_encode_test(&t, &w), "condition 22 accepted");
+      t = (struct prismrv_usse_test){ .op = 14, .cond = 3, .chan = 3 };
+      CHECK(!prismrv_usse_encode_test(&t, &w), "channel 3 accepted");
+      t = (struct prismrv_usse_test){ .op = 14, .cond = 3, .dst_pred = 3 };
+      CHECK(!prismrv_usse_encode_test(&t, &w), "predicate 3 accepted");
+      t = (struct prismrv_usse_test){ .op = 14, .cond = 3, .src1 = 128 };
+      CHECK(!prismrv_usse_encode_test(&t, &w), "source register 128 accepted");
+   }
 
    if (fails)
       return 1;
