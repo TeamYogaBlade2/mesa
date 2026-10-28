@@ -98,6 +98,8 @@ enum prismrv_usse_vec2_op {
    PRISMRV_USSE_VADD,     /* dst = src1 + src2 */
    PRISMRV_USSE_VMIN,
    PRISMRV_USSE_VMAX,
+   PRISMRV_USSE_VDSX,     /* src1 differentiated on x (dFdx) */
+   PRISMRV_USSE_VDSY,     /* src1 differentiated on y (dFdy) */
 };
 
 struct prismrv_usse_vec2 {

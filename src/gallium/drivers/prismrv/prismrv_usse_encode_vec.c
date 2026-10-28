@@ -188,11 +188,12 @@ vec2_src_decode(unsigned ext, unsigned o, unsigned pa, unsigned field,
 bool
 prismrv_usse_encode_vec2(const struct prismrv_usse_vec2 *in, uint64_t *out)
 {
-   static const uint8_t sub[4] = { 0, 1, 5, 6 };
+   /* measured sub-opcodes: vmul vadd vmin vmax vdsx vdsy (see prismrv analysis doc) */
+   static const uint8_t sub[] = { 0, 1, 5, 6, 3, 4 };
    uint64_t w = BIT64(59);
    unsigned field, hw, o, pa, pb;
 
-   if (in->op > PRISMRV_USSE_VMAX || (in->flags & ~7u) ||
+   if (in->op > PRISMRV_USSE_VDSY || (in->flags & ~7u) ||
        !pred_to_bits(in->pred, false, &pb))
       return false;
    w |= (uint64_t)sub[in->op] << 12;
