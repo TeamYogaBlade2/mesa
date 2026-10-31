@@ -14,14 +14,19 @@ so adding another variant is one table entry.
 
 ## Command stream ABI: read this first
 
-The driver emits the **PrismRV command stream**
-(`PRISMRV_CMD_ABI_STREAM_V1`, documented at the top of
-`prismrv_context.c`), executed by the PrismRV emulator / a custom
-uKernel.  The Linux driver does not interpret it, and the stock vendor
-uKernel does not understand it.  The screen refuses to start unless the
-kernel reports `PRISMRV_UAPI_VERSION` 3 and this command ABI, and every
-address inside a stream is a GPU VA obtained from `GEM_CREATE`.  This is
-therefore not yet a driver for unmodified SGX hardware firmware.
+The driver emits the **PrismRV command stream** (`PRISMRV_CMD_ABI_STREAM_V1`,
+documented at the top of `prismrv_context.c`), executed by the PrismRV
+emulator / a custom uKernel.  The Linux driver does not interpret it.
+
+Status of the stock (vendor-extracted) uKernel: the Linux driver now boots it
+unmodified from a firmware container produced by running the vendor loader
+(prismrv repo, `analysis/UKERNEL_IMMEDIATES.md` sections 5-8).  What is still
+missing for real rendering is the **vendor TA kick payload** (the UMD-built
+`ui32Data[6]`, CMDTA, TA/3D state, PDS programs and HWRTData), which is only
+defined inside the closed vendor UMD.  Capturing real kicks with the emulator
+(`PVR_KICK_DUMP=1`) is the next step; until then STREAM_V1 stays emulator-only
+and this driver cannot render on unmodified SGX firmware.  The screen still
+refuses to start unless the kernel reports the expected UAPI/command ABI.
 
 ## Security contract (render node)
 
