@@ -33,6 +33,13 @@ prismrv_usse_vec_test = executable(
 )
 test('prismrv-usse-vec', prismrv_usse_vec_test, suite: ['prismrv'])
 
+prismrv_vendor_emit_test = executable(
+  'prismrv_vendor_emit_test',
+  ['prismrv_vendor_emit_test.c', '../prismrv_vendor_emit.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-vendor-emit', prismrv_vendor_emit_test, suite: ['prismrv'])
+
 libprismrv_fdleak = executable(
   'prismrv_fdleak',
   'prismrv_fdleak.c',

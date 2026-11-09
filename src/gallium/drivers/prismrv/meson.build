@@ -13,6 +13,7 @@ files_prismrv = files(
   'prismrv_usse_nir.c',
   'prismrv_resource.c',
   'prismrv_screen.c',
+  'prismrv_vendor_emit.c',
 )
 
 prismrv_c_args = []
