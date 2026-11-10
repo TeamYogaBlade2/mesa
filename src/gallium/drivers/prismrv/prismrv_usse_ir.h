@@ -219,4 +219,27 @@ struct prismrv_usse_vrcp {
    uint8_t src_comp;         /* 0..3 */
 };
 
+/*
+ * Branches (opcode class [63:59] = 0b11111).  Measured with the vendor disassembler (tools/usse_oracle/
+ * branch_model.py, analysis/shaders/BRANCH_ENCODING.md in the prismrv repository).  Units are 64-bit instructions:
+ *   BA: absolute instruction number, 0..0xFFFFF
+ *   BR: signed offset from the branch's own instruction, -0x80000..0x7FFFF
+ * The branch predicate field is [58:56] = {none,p0,p1,p2,p3,!p0,!p1,Pn}: there is NO !p2 form (encode fails) and
+ * p3/Pn have no enum value here.  allinst/anyinst take the branch only when the predicate holds in all/any
+ * instance of the SIMD group.
+ */
+enum prismrv_usse_branch_kind { PRISMRV_USSE_BA, PRISMRV_USSE_BR };
+
+#define PRISMRV_USSE_BR_NOSCHED  (1u << 0)
+#define PRISMRV_USSE_BR_SAVELINK (1u << 1)   /* store the return address in the link register */
+#define PRISMRV_USSE_BR_ALLINST  (1u << 2)
+#define PRISMRV_USSE_BR_ANYINST  (1u << 3)
+
+struct prismrv_usse_branch {
+   uint8_t kind;             /* enum prismrv_usse_branch_kind */
+   uint8_t pred;             /* enum prismrv_usse_pred (not NOT_P2) */
+   uint8_t flags;            /* PRISMRV_USSE_BR_* */
+   int32_t target;
+};
+
 #endif /* PRISMRV_USSE_IR_H_ */

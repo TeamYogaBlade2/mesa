@@ -201,3 +201,30 @@ prismrv_usse_decode_vmad(uint64_t w, struct prismrv_usse_vmad *out)
    *out = d;
    return true;
 }
+
+bool
+prismrv_usse_encode_branch(const struct prismrv_usse_branch *in, uint64_t *out)
+{
+   /* execution predicate [58:56]: none, p0, p1, p2, p3, !p0, !p1, Pn (no !p2) */
+   static const int8_t pred_bits[] = {
+      [PRISMRV_USSE_PRED_NONE] = 0, [PRISMRV_USSE_PRED_P0] = 1, [PRISMRV_USSE_PRED_NOT_P0] = 5,
+      [PRISMRV_USSE_PRED_P1] = 2, [PRISMRV_USSE_PRED_NOT_P1] = 6, [PRISMRV_USSE_PRED_P2] = 3,
+      [PRISMRV_USSE_PRED_NOT_P2] = -1,
+   };
+   uint64_t w = UINT64_C(0x1f) << 59;
+
+   if (in->kind > PRISMRV_USSE_BR || in->pred >= sizeof(pred_bits) || pred_bits[in->pred] < 0 ||
+       (in->flags & ~15u))
+      return false;
+   if (in->kind == PRISMRV_USSE_BA ? (in->target < 0 || in->target > 0xFFFFF)
+                                   : (in->target < -0x80000 || in->target > 0x7FFFF))
+      return false;
+   w |= (uint64_t)pred_bits[in->pred] << 56 | ((uint64_t)in->target & 0xFFFFF);
+   if (in->kind == PRISMRV_USSE_BR)           w |= BIT64(38);
+   if (in->flags & PRISMRV_USSE_BR_NOSCHED)   w |= BIT64(43);
+   if (in->flags & PRISMRV_USSE_BR_SAVELINK)  w |= BIT64(41);
+   if (in->flags & PRISMRV_USSE_BR_ALLINST)   w |= BIT64(20);
+   if (in->flags & PRISMRV_USSE_BR_ANYINST)   w |= BIT64(21);
+   *out = w;
+   return true;
+}

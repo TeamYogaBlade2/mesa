@@ -41,6 +41,9 @@ bool prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out);
 
 bool prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out);
 
+/* ba / br; false for an out-of-range target, !p2, or unknown flags */
+bool prismrv_usse_encode_branch(const struct prismrv_usse_branch *in, uint64_t *out);
+
 /* index (0..7) of @swz among source slot @slot's (1..3) presets, or -1 */
 int prismrv_usse_swizzle_preset(unsigned slot, const char swz[4]);
 
