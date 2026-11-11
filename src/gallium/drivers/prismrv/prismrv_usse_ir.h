@@ -242,4 +242,36 @@ struct prismrv_usse_branch {
    int32_t target;
 };
 
+/*
+ * Bitwise / shift family: and or xor shl rol shr asr (opcode1 10..13 + variant bit).  Measured with the vendor
+ * disassembler (tools/usse_oracle/bitwise_model.py, analysis/shaders/BITWISE_ENCODING.md in the prismrv
+ * repository).  Operands: dst/src1/src2 in banks r/o/pa/sa (+ internal i0..i3 = r124..r127); sources may be
+ * immediates (src1: 7 bits, src2: 16 bits, zero-extended).  `invert2` complements src2 (`~`).  Destinations
+ * cannot be immediates.  Index banks (r[il+n], r[ih+n]) are not modelled.
+ */
+enum prismrv_usse_bw_op {
+   PRISMRV_USSE_BW_AND, PRISMRV_USSE_BW_OR, PRISMRV_USSE_BW_XOR, PRISMRV_USSE_BW_SHL,
+   PRISMRV_USSE_BW_ROL, PRISMRV_USSE_BW_SHR, PRISMRV_USSE_BW_ASR,
+};
+
+#define PRISMRV_USSE_BW_PARTIAL (1u << 0)
+#define PRISMRV_USSE_BW_END     (1u << 1)
+#define PRISMRV_USSE_BW_SYNCS   (1u << 2)
+#define PRISMRV_USSE_BW_NOSCHED (1u << 3)
+#define PRISMRV_USSE_BW_SKIPINV (1u << 4)
+
+struct prismrv_usse_bw_operand {
+   uint8_t bank;             /* enum prismrv_usse_bank: R O PA SA I IMM */
+   uint16_t val;             /* register number, internal register 0..3 (BANK_I) or immediate */
+};
+
+struct prismrv_usse_bitwise {
+   uint8_t op;               /* enum prismrv_usse_bw_op */
+   uint8_t pred;             /* enum prismrv_usse_pred (not NOT_P2) */
+   struct prismrv_usse_bw_operand dst, src1, src2;
+   uint8_t invert2;
+   uint8_t repeat;           /* 1..16 */
+   uint8_t flags;            /* PRISMRV_USSE_BW_* */
+};
+
 #endif /* PRISMRV_USSE_IR_H_ */

@@ -26,6 +26,13 @@ prismrv_usse_encode_test = executable(
 )
 test('prismrv-usse-encode', prismrv_usse_encode_test, suite: ['prismrv'])
 
+prismrv_usse_bitwise_test = executable(
+  'prismrv_usse_bitwise_test',
+  ['prismrv_usse_bitwise_test.c', '../prismrv_usse_encode.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-usse-bitwise', prismrv_usse_bitwise_test, suite: ['prismrv'])
+
 prismrv_usse_branch_test = executable(
   'prismrv_usse_branch_test',
   ['prismrv_usse_branch_test.c', '../prismrv_usse_encode.c'],

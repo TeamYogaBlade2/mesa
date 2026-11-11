@@ -228,3 +228,83 @@ prismrv_usse_encode_branch(const struct prismrv_usse_branch *in, uint64_t *out)
    *out = w;
    return true;
 }
+
+/* 3-bit bank code -> bank enum, as laid out in prismrv_usse_ir.h; returns -1 for banks that cannot be encoded */
+static int
+bw_src_bank(unsigned bank, unsigned *val, bool *imm)
+{
+   *imm = false;
+   switch (bank) {
+   case PRISMRV_USSE_BANK_R:  return 0;
+   case PRISMRV_USSE_BANK_O:  return 1;
+   case PRISMRV_USSE_BANK_PA: return 2;
+   case PRISMRV_USSE_BANK_SA: return 3;
+   case PRISMRV_USSE_BANK_I:
+      if (*val > 3)
+         return -1;
+      *val += 124;           /* internal registers are r124..r127 */
+      return 0;
+   case PRISMRV_USSE_BANK_IMM: *imm = true; return 6;
+   default: return -1;
+   }
+}
+
+static int
+bw_dst_bank(unsigned bank, unsigned *val)
+{
+   switch (bank) {
+   case PRISMRV_USSE_BANK_R:  return 0;
+   case PRISMRV_USSE_BANK_O:  return 1;
+   case PRISMRV_USSE_BANK_PA: return 2;
+   case PRISMRV_USSE_BANK_SA: return 4;
+   case PRISMRV_USSE_BANK_I:
+      if (*val > 3)
+         return -1;
+      *val += 124;
+      return 0;
+   default: return -1;
+   }
+}
+
+bool
+prismrv_usse_encode_bitwise(const struct prismrv_usse_bitwise *in, uint64_t *out)
+{
+   /* opcode1 (bits 63:59) and the variant bit (35): and|or, xor, shl|rol, shr|asr */
+   static const uint8_t op1[] = { 10, 10, 11, 12, 12, 13, 13 };
+   static const uint8_t var[] = { 0, 1, 0, 0, 1, 0, 1 };
+   static const int8_t pred_bits[] = {
+      [PRISMRV_USSE_PRED_NONE] = 0, [PRISMRV_USSE_PRED_P0] = 1, [PRISMRV_USSE_PRED_NOT_P0] = 5,
+      [PRISMRV_USSE_PRED_P1] = 2, [PRISMRV_USSE_PRED_NOT_P1] = 6, [PRISMRV_USSE_PRED_P2] = 3,
+      [PRISMRV_USSE_PRED_NOT_P2] = -1,
+   };
+   unsigned dv = in->dst.val, v1 = in->src1.val, v2 = in->src2.val;
+   bool imm1, imm2;
+   int db, b1, b2;
+   uint64_t w;
+
+   if (in->op >= sizeof(op1) || in->pred >= sizeof(pred_bits) || pred_bits[in->pred] < 0 ||
+       in->repeat < 1 || in->repeat > 16 || (in->flags & ~31u) || in->invert2 > 1)
+      return false;
+   db = bw_dst_bank(in->dst.bank, &dv);
+   b1 = bw_src_bank(in->src1.bank, &v1, &imm1);
+   b2 = bw_src_bank(in->src2.bank, &v2, &imm2);
+   if (db < 0 || b1 < 0 || b2 < 0 || dv > 127 || (imm1 ? v1 > 127 : v1 > 127) || (imm2 ? v2 > 0xFFFF : v2 > 127))
+      return false;
+
+   w = (uint64_t)op1[in->op] << 59 | (uint64_t)pred_bits[in->pred] << 56 | (uint64_t)var[in->op] << 35;
+   w |= (uint64_t)dv << 21 | (uint64_t)(db & 3) << 32 | (uint64_t)(db >> 2) << 51;
+   w |= (uint64_t)v1 << 7 | (uint64_t)(b1 & 3) << 30 | (uint64_t)(b1 >> 2) << 49;
+   w |= (uint64_t)(b2 & 3) << 28 | (uint64_t)(b2 >> 2) << 48;
+   if (imm2)  /* 16-bit immediate: lo[6:0], lo[20:14], hi[5:4] */
+      w |= (v2 & 0x7F) | (uint64_t)((v2 >> 7) & 0x7F) << 14 | (uint64_t)(v2 >> 14) << 36;
+   else
+      w |= v2;
+   w |= (uint64_t)in->invert2 << 43 | (uint64_t)(in->repeat - 1) << 44;
+   if (in->flags & PRISMRV_USSE_BW_PARTIAL) w |= BIT64(34);
+   if (in->flags & PRISMRV_USSE_BW_END)     w |= BIT64(50);
+   if (in->flags & PRISMRV_USSE_BW_SYNCS)   w |= BIT64(52);
+   if (in->flags & PRISMRV_USSE_BW_NOSCHED) w |= BIT64(54);
+   if (in->flags & PRISMRV_USSE_BW_SKIPINV) w |= BIT64(55);
+   *out = w;
+   return true;
+}

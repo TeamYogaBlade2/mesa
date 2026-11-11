@@ -41,6 +41,9 @@ bool prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out);
 
 bool prismrv_usse_encode_test(const struct prismrv_usse_test *in, uint64_t *out);
 
+/* and/or/xor/shl/rol/shr/asr; false for an operand/bank/immediate that does not fit the hardware form */
+bool prismrv_usse_encode_bitwise(const struct prismrv_usse_bitwise *in, uint64_t *out);
+
 /* ba / br; false for an out-of-range target, !p2, or unknown flags */
 bool prismrv_usse_encode_branch(const struct prismrv_usse_branch *in, uint64_t *out);
 
