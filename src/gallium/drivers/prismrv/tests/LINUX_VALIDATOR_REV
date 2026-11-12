@@ -1,0 +1,3 @@
+# Linux commit whose prismrv_stream.c this tree is tested against.
+# Bump together with any change to the command-stream ABI (both repos).
+de3ff393edd0419659efd2366527519a3cbf6c4e

@@ -88,6 +88,7 @@ static const struct drm_driver_descriptor *driver_descriptors[] = {
    &ethosu_driver_descriptor,
    &tegra_driver_descriptor,
    &lima_driver_descriptor,
+   &prismrv_driver_descriptor,
    &zink_driver_descriptor,
    &kmsro_driver_descriptor,
 };
