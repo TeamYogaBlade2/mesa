@@ -47,6 +47,13 @@ prismrv_usse_vec_test = executable(
 )
 test('prismrv-usse-vec', prismrv_usse_vec_test, suite: ['prismrv'])
 
+prismrv_vendor_stream_test = executable(
+  'prismrv_vendor_stream_test',
+  ['prismrv_vendor_stream_test.c', '../prismrv_vendor_stream.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-vendor-stream', prismrv_vendor_stream_test, suite: ['prismrv'])
+
 prismrv_vendor_pds_test = executable(
   'prismrv_vendor_pds_test',
   ['prismrv_vendor_pds_test.c'],

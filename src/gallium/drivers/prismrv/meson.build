@@ -15,6 +15,7 @@ files_prismrv = files(
   'prismrv_screen.c',
   'prismrv_vendor_emit.c',
   'prismrv_vendor_kick.c',
+  'prismrv_vendor_stream.c',
   'prismrv_vendor_submit.c',
 )
 
