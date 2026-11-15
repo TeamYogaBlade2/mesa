@@ -47,6 +47,15 @@ prismrv_usse_vec_test = executable(
 )
 test('prismrv-usse-vec', prismrv_usse_vec_test, suite: ['prismrv'])
 
+prismrv_vendor_ctx_test = executable(
+  'prismrv_vendor_ctx_test',
+  ['prismrv_vendor_ctx_test.c', '../prismrv_vendor_ctx.c', '../prismrv_vendor_desc.c', '../prismrv_vendor_emit.c',
+   '../prismrv_vendor_kick.c', '../prismrv_vendor_stream.c', '../prismrv_vendor_submit.c'],
+  c_args: ['-Wall', '-Wextra'],
+  dependencies: [dep_libdrm],
+)
+test('prismrv-vendor-ctx', prismrv_vendor_ctx_test, suite: ['prismrv'])
+
 prismrv_vendor_desc_test = executable(
   'prismrv_vendor_desc_test',
   ['prismrv_vendor_desc_test.c', '../prismrv_vendor_desc.c'],

@@ -33,6 +33,17 @@ prismrv_drm_get_param(int fd, uint32_t param, uint64_t *value)
    return 0;
 }
 
+/* UAPI v6: place the BO in a vendor heap (PRISMRV_HEAP_*); heap 0 is the plain default window */
+uint32_t
+prismrv_drm_gem_create_heap(int fd, uint64_t size, uint32_t heap, uint32_t *gpu_va)
+{
+   struct drm_prismrv_gem_create c = { .size = size, .heap = heap };
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_GEM_CREATE, &c))
+      return 0;
+   *gpu_va = c.gpu_va;
+   return c.handle;
+}
+
 uint32_t
 prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va)
 {

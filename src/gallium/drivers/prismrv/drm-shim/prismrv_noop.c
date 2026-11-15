@@ -8,6 +8,7 @@
  */
 
 #include <errno.h>
+#include <stdbool.h>
 #include <limits.h>
 #include <stdio.h>
 #include <sys/mman.h>
@@ -87,6 +88,12 @@ prismrv_ioctl_get_param(int fd, unsigned long request, void *arg)
    case PRISMRV_PARAM_CMD_ABI:
       gp->value = PRISMRV_CMD_ABI_STREAM_V1;
       return 0;
+   case PRISMRV_PARAM_VENDOR_ABI:
+      gp->value = 0;                 /* the shim has no uKernel: SUBMIT_VENDOR is not enabled */
+      return 0;
+   case PRISMRV_PARAM_HEAPS:          /* default + heaps 1,3,4,5,6,7,8,10 (see prismrv_ioctl_gem_create) */
+      gp->value = (1u << 0) | (1u << 1) | (1u << 3) | (1u << 4) | (1u << 5) | (1u << 6) | (1u << 7) | (1u << 8) | (1u << 10);
+      return 0;
    default:
       fprintf(stderr, "Unknown DRM_IOCTL_PRISMRV_GET_PARAM %u\n", gp->param);
       return -1;
@@ -101,20 +108,34 @@ prismrv_ioctl_gem_create(int fd, unsigned long request, void *arg)
 {
    struct drm_prismrv_gem_create *create = arg;
 
-   struct shim_fd *shim_fd = drm_shim_fd_lookup(fd);
-   struct shim_bo *bo = calloc(1, sizeof(*bo));
-   size_t size = align64(create->size, 4096);
+   /* UAPI v6 heaps: ids and bases as in the kernel (prismrv_gem.c); 0 = the default window */
+   static const struct { uint32_t base; bool valid; } heaps[11] = {
+      [0] = { 0x10000000u, true },  [1] = { 0xd0000000u, true },  [3] = { 0xf0000000u, true },  [4] = { 0xf4000000u, true },
+      [5] = { 0xfc000000u, true },  [6] = { 0xe4000000u, true },  [7] = { 0xec000000u, true },  [8] = { 0xe0000000u, true },
+      [10] = { 0xc8000000u, true },
+   };
+   static uint32_t next_va[11];
+   struct shim_fd *shim_fd;
+   struct shim_bo *bo;
+   size_t size;
+
+   if (create->heap >= ARRAY_SIZE(heaps) || !heaps[create->heap].valid)
+      return -EINVAL;
+   shim_fd = drm_shim_fd_lookup(fd);
+   bo = calloc(1, sizeof(*bo));
+   size = align64(create->size, 4096);
 
    drm_shim_bo_init(bo, size);
 
    create->handle = drm_shim_bo_get_handle(shim_fd, bo);
    /* fixed, page-aligned GPU VA per BO (bump allocator, like the kernel) */
    {
-      static uint32_t next_va = 0x10000000u;
+      uint32_t *nv = &next_va[create->heap];
 
-      create->gpu_va = next_va;
-      create->pad = 0;
-      next_va += size;
+      if (!*nv)
+         *nv = heaps[create->heap].base;
+      create->gpu_va = *nv;
+      *nv += size;
       if (create->handle < ARRAY_SIZE(shim_va))
          shim_va[create->handle] = create->gpu_va;
    }

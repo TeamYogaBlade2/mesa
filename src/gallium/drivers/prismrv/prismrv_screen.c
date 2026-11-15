@@ -7,6 +7,8 @@
 #include "prismrv_screen.h"
 
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 #include <inttypes.h>
 
@@ -248,6 +250,21 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
       close(screen->fd);
       ralloc_free(screen);
       return NULL;
+   }
+
+   /*
+    * Vendor path (stock uKernel) probe.  Opt-in only (PRISMRV_VENDOR=1) and REPORT-ONLY for now: the context and frame assembly
+    * exist (prismrv_vendor_ctx.c, host-tested against a fake kernel) but the contents of the HW objects the CCB entry points
+    * at and the fragment-binding reference are not wired (see prismrv_vendor_ctx.h), so rendering stays on the native path.
+    */
+   if (getenv("PRISMRV_VENDOR")) {
+      uint64_t vabi = 0, heaps = 0;
+      int e_vabi = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_VENDOR_ABI, &vabi);
+      int e_heaps = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_HEAPS, &heaps);
+
+      fprintf(stderr, "prismrv: PRISMRV_VENDOR set: kernel vendor ABI %s, placed heaps 0x%" PRIx64 "%s; "
+              "vendor kick path not enabled for rendering (HW object contents unwired), using the native path\n",
+              (!e_vabi && vabi) ? "enabled" : "off", e_heaps ? 0 : heaps, e_heaps ? " (unavailable)" : "");
    }
 
    int e_id = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_ID,
