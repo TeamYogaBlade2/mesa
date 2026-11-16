@@ -221,7 +221,9 @@ main(void)
       struct prismrv_vk_frame_result rr;
       struct prismrv_vk_frame_in bad;
 
-      bad = in; bad.n_attrs = 2;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "2 attributes accepted");
+      bad = in; bad.n_attrs = 3;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "3 attributes accepted");
+      bad = in; bad.n_attrs = 2; bad.attr1_va = in.attr_va + 12; bad.attr1_dwords_m1 = 3; bad.attr1_stride = 28;
+      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "2 attributes refused: %s", why ? why : "?");
       bad = in; bad.code_size = 12;             CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "code size 12 accepted");
       bad = in; bad.code = NULL;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "no code accepted");
       /* stencil test + partial viewport -> state list B of 20 dwords: never captured, accepted through the fitted control word

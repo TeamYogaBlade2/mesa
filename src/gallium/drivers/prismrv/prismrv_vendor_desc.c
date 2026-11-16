@@ -124,3 +124,20 @@ prismrv_vk_desc_vprog1(uint32_t attr_va, uint32_t dwords_m1, uint32_t stride, ui
    out[4] = ctl;
    return PRISMRV_VK_DESC_VPROG1_DWORDS;
 }
+
+unsigned
+prismrv_vk_desc_vprog2(const uint32_t attr0[3], const uint32_t attr1[3], uint32_t ctl, uint32_t *out)
+{
+   static const uint32_t code[6] = { 0x67800072, 0x2f0191a3, 0x67800272, 0x2f0591a3, 0x030811a5, 0xaf000000 };
+
+   memset(out, 0, PRISMRV_VK_DESC_VPROG2_DWORDS * 4);
+   out[0] = attr1[0];
+   out[1] = attr1[1];
+   out[2] = attr1[2];
+   out[3] = attr0[2];
+   out[4] = attr0[0];
+   out[5] = 0x400u | attr0[1];
+   out[8] = ctl;
+   memcpy(out + 12, code, sizeof(code));
+   return PRISMRV_VK_DESC_VPROG2_DWORDS;
+}

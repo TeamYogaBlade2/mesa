@@ -89,5 +89,25 @@ main(void)
          fails++;
       }
    }
+   /* two-attribute vertex programs: the 6 distinct captured objects (variants3 cfg2/3/7/8, variants8 cfg1/5) */
+   {
+      static const struct { uint32_t a0[3], a1[3], dw[6]; } v2[] = {
+         { { 0x10197000, 2, 0x1c }, { 0x1019700c, 3, 0x1c }, { 0x1019700c, 3, 0x1c, 0x1c, 0x10197000, 0x402 } },
+         { { 0x10197000, 2, 0x10 }, { 0x1019700c, 0, 0x10 }, { 0x1019700c, 0, 0x10, 0x10, 0x10197000, 0x402 } },
+         { { 0x10197000, 2, 0x0c }, { 0x10198000, 3, 0x10 }, { 0x10198000, 3, 0x10, 0x0c, 0x10197000, 0x402 } },
+         { { 0x10197000, 2, 0x0c }, { 0x10197024, 3, 0x10 }, { 0x10197024, 3, 0x10, 0x0c, 0x10197000, 0x402 } },
+         { { 0x1019700c, 3, 0x24 }, { 0x10197000, 2, 0x24 }, { 0x10197000, 2, 0x24, 0x24, 0x1019700c, 0x403 } },
+         { { 0x10197000, 2, 0x24 }, { 0x1019700c, 3, 0x24 }, { 0x1019700c, 3, 0x24, 0x24, 0x10197000, 0x402 } },
+      };
+      uint32_t o[PRISMRV_VK_DESC_VPROG2_DWORDS];
+
+      for (unsigned i = 0; i < sizeof(v2) / sizeof(v2[0]); i++) {
+         prismrv_vk_desc_vprog2(v2[i].a0, v2[i].a1, 0x00020602, o);
+         if (memcmp(o, v2[i].dw, sizeof(v2[i].dw)) || o[8] != 0x00020602 || o[12] != 0x67800072 || o[16] != 0x030811a5 || o[17] != 0xaf000000) {
+            fprintf(stderr, "vprog2 vector %u differs from the capture\n", i);
+            fails++;
+         }
+      }
+   }
    return fails ? 1 : 0;
 }

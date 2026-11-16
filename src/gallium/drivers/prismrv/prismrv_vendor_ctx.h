@@ -71,7 +71,8 @@ struct prismrv_vk_frame_in {
    const void *code;                  /* fragment USSE code */
    uint32_t code_size;                /* multiple of 8 */
    /* standard shape: one attribute, one clear quad, one indexed draw */
-   uint32_t attr_va, attr_dwords_m1, attr_stride, vprog_ctl;
+   uint32_t attr_va, attr_dwords_m1, attr_stride, vprog_ctl;   /* attribute 0 */
+   uint32_t attr1_va, attr1_dwords_m1, attr1_stride;           /* attribute 1, when n_attrs == 2 */
    uint8_t n_attrs;
    bool varying;
    uint32_t clear_quad_va, index_va;

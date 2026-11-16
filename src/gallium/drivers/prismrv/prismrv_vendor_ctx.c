@@ -90,8 +90,8 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    uint8_t *p;
    unsigned n, slot, nb = 0;
 
-   if (in->n_attrs != 1)
-      FAIL(-ENOTSUP, "vertex programs with more than one attribute are not built yet");
+   if (in->n_attrs != 1 && in->n_attrs != 2)
+      FAIL(-ENOTSUP, "vertex programs with more than two attributes are not built (3 attributes captured once, layout ambiguous)");
    if (!in->code || !in->code_size || (in->code_size & 7))
       FAIL(-EINVAL, "shader code size must be a non-zero multiple of 8");
    if (in->n_extra_bos > 32)
@@ -172,7 +172,13 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, acd_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
-      len = prismrv_vk_desc_vprog1(in->attr_va, in->attr_dwords_m1, in->attr_stride, in->vprog_ctl, o);
+      if (in->n_attrs == 2) {
+         const uint32_t a0[3] = { in->attr_va, in->attr_dwords_m1, in->attr_stride };
+         const uint32_t a1[3] = { in->attr1_va, in->attr1_dwords_m1, in->attr1_stride };
+         len = prismrv_vk_desc_vprog2(a0, a1, in->vprog_ctl, o);
+      } else {
+         len = prismrv_vk_desc_vprog1(in->attr_va, in->attr_dwords_m1, in->attr_stride, in->vprog_ctl, o);
+      }
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, vp_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
