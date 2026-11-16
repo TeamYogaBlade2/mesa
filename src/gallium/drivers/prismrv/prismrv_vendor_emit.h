@@ -45,6 +45,17 @@ struct prismrv_vk_state {
    uint8_t st_write_mask, st_compare_mask;
    uint32_t stream_va;                /* device VA of the TA control stream (caller's allocation) */
    uint32_t render_details_va;        /* device VA of HWRENDERDETAILS (caller's allocation) */
+   /*
+    * Pixel-PDS heap (heap 6) objects the kick refers to, as device VAs (0 = the value of the captured process, kept so the
+    * golden test still reproduces the captures).  Measured over 119 captured kicks (analysis/FRAGMENT_BINDING_REF.md):
+    *   pds_bg_va  : 16-byte aligned object [desc][0][0][0][070001a5][af000000]; referenced as (va >> 4) by CCB header dw2 and
+    *                ISP state list A (dw3, dw4 with a stencil attachment)
+    *   pds_bg2_va : the larger object that list A dw5 (dw6 with stencil) refers to as (va >> 4)
+    *   pds_fs_va  : the DRAW's fragment-shader binding object; ISP state list B dw5 (dw6 with a stencil record) = va >> 4.
+    *                This is the only one of the three that follows the fragment shader.
+    *   pds_arena2_va : base of the second heap-6 arena, written raw (not >> 4) into 3DREGISTERS dw30
+    */
+   uint32_t pds_bg_va, pds_bg2_va, pds_fs_va, pds_arena2_va;
 };
 
 struct prismrv_vk_kick {

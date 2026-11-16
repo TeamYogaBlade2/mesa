@@ -131,13 +131,16 @@ main(void)
    CHECK(r.code_va >= 0xf4000000 && !(r.code_va & 7), "code va 0x%08x", r.code_va);
    CHECK(memcmp(dev(&f, r.code_va), in.code, in.code_size) == 0, "code bytes");
    CHECK(prismrv_vk_shader_descriptor_va(rd(&f, r.binding_va)) == r.code_va, "binding word 0x%08x does not decode to the code va", rd(&f, r.binding_va));
-   CHECK(rd(&f, r.binding_va + 16) == 0x070001a5 && rd(&f, r.binding_va + 20) == 0xaf000000, "binding program words");
+   /* the fragment binding is the 0x070001b5 object (not the process-constant 0x070001a5 one) and the ISP state list B points at it */
+   CHECK(rd(&f, r.binding_va + 16) == 0x070001b5 && rd(&f, r.binding_va + 4) == 2, "fragment binding program words");
+   CHECK(r.binding_va == (r.binding_va & ~0x1fu) && (r.binding_va & 0xf0000000) == 0xe0000000, "binding va 0x%08x", r.binding_va);
 
    /* the entry in the ring */
    {
       uint32_t entry[PRISMRV_VK_ENTRY_BYTES / 4];
       const uint8_t *e = dev(&f, c.arena[PRISMRV_VK_ARENA_CCB].va);
       struct prismrv_vk_state gl = in.gl;
+      gl.pds_bg_va = r.bg_va; gl.pds_bg2_va = r.bg2_va; gl.pds_fs_va = r.binding_va; gl.pds_arena2_va = r.arena2_va;
       struct prismrv_vk_kick k;
 
       gl.stream_va = r.stream_va;
@@ -176,6 +179,7 @@ main(void)
          nr++; i += 2;
       }
       struct prismrv_vk_state gl = in.gl;
+      gl.pds_bg_va = r.bg_va; gl.pds_bg2_va = r.bg2_va; gl.pds_fs_va = r.binding_va; gl.pds_arena2_va = r.arena2_va;
       struct prismrv_vk_kick k;
       gl.stream_va = r.stream_va;
       gl.render_details_va = in.render_details_va;
@@ -201,7 +205,7 @@ main(void)
       CHECK(rec_cls[9] == 6 && rec_task[9] == 0x1a022201 && rd(&f, rec_va[9]) == 0x2000, "fragment-output epilogue");
    }
 
-   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_FRAGMENT_BINDING_REF | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS), "unwired flags 0x%x", r.unwired);
+   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS), "unwired flags 0x%x", r.unwired);
 
    /* second frame: next ring slot, no FIRST flag, fresh allocations */
    {

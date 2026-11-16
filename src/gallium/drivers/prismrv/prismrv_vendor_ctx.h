@@ -9,7 +9,8 @@
  * The DRM calls go through `struct prismrv_vk_ops`, so the whole thing is tested on the host with a fake kernel.
  *
  * WHAT IS NOT WIRED (reported in prismrv_vk_frame_result.unwired, never faked):
- *   - how the fragment USSE binding object (heap 6) is referenced from the ISP state lists,
+ *   - the per-process background program the CCB header and ISP state list A refer to (the fragment binding itself IS wired:
+ *     ISP state list B dw5 / dw6, analysis/FRAGMENT_BINDING_REF.md in the prismrv repository),
  *   - the contents of the HW objects the CCB entry points at (HWPBDESC, HWRTDATASET, sync info) and of the HW render
  *     context (`ui32Data[1]`): the caller supplies their VAs, this module does not fill them,
  *   - the contents of the scissor / access blocks, vertex data and the clear quad (caller buffers).
@@ -86,16 +87,22 @@ struct prismrv_vk_frame_in {
    uint32_t render_details_va;
    uint32_t hwrc_va;
    const uint32_t *extra_bos; unsigned n_extra_bos;   /* BOs the GPU touches that this context did not allocate */
+   /* fragment binding object variant words (cause unknown, see prismrv_vk_pds_fs_binding) */
+   bool colour_varying;
+   uint32_t fs_bind_dw3;
+   /* USSE code (heap 4) of the per-process background program the CCB header / list A refer to; 0 = not available */
+   uint32_t bg_code_va;
 };
 
 enum prismrv_vk_unwired {
-   PRISMRV_VK_UNWIRED_FRAGMENT_BINDING_REF = 1u << 0,   /* binding object placed but nothing points at it yet */
+   PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* no bg_code_va: the process-constant objects list A / CCB dw2 refer to are zero */
    PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / HWRC are the caller's */
 };
 
 struct prismrv_vk_frame_result {
    unsigned slot;                     /* CCB ring slot used */
-   uint32_t code_va, binding_va, stream_va;
+   uint32_t code_va, binding_va, stream_va;   /* binding_va = the fragment binding object (ISP state list B points at it) */
+   uint32_t bg_va, bg2_va, arena2_va;          /* the heap-6 objects CCB dw2 / list A / 3DREGISTERS dw30 refer to */
    unsigned stream_dwords;
    uint32_t unwired;                  /* enum prismrv_vk_unwired bits */
 };

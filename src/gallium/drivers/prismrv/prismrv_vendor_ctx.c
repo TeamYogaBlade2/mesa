@@ -84,7 +84,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    struct prismrv_vk_kick k;
    struct prismrv_vk_stream_params sp;
    uint32_t stream_va, code_va, bind_va, blk_a_va, blk_b_va, sc_va, ac_va, a_va, b_va, scd_va, acd_va, vp_va, e0_va, ep_va, eo_va;
-   uint32_t w[PRISMRV_VK_STREAM_MAX_DWORDS], binding[PRISMRV_VK_PDS_BINDING_DWORDS];
+   uint32_t w[PRISMRV_VK_STREAM_MAX_DWORDS];
    uint32_t entry[PRISMRV_VK_ENTRY_BYTES / 4], bos[8 + 32];
    uint8_t *p;
    unsigned n, slot, nb = 0;
@@ -96,15 +96,35 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    if (in->n_extra_bos > 32)
       FAIL(-EINVAL, "too many extra BOs");
 
-   /* 1. shader code and its PDS binding object */
+   /* 1. shader code and the heap-6 objects: [bg object 0x20][fragment binding 0x20][bg2 object]; ISP state list B points at the
+    * fragment binding (va >> 4), the CCB header and list A at the two background objects (measured, not hardware verified) */
    if (!(p = ALLOC(PRISMRV_VK_ARENA_CODE, in->code_size, 8, code_va)))
       FAIL(-ENOSPC, "code arena full");
    memcpy(p, in->code, in->code_size);
-   if (!prismrv_vk_pds_binding(code_va, binding))
-      FAIL(-EFAULT, "code address cannot be encoded as a binding descriptor");
-   if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_P, sizeof(binding), 16, bind_va)))
-      FAIL(-ENOSPC, "pixel PDS arena full");
-   memcpy(p, binding, sizeof(binding));
+   {
+      uint32_t fb[PRISMRV_VK_PDS_FS_BINDING_DWORDS], bg[PRISMRV_VK_PDS_BINDING_DWORDS] = { 0 };
+      uint32_t bg2[8] = { 0 };
+
+      if (!prismrv_vk_pds_fs_binding(code_va, in->colour_varying, in->fs_bind_dw3, fb))
+         FAIL(-EFAULT, "code address cannot be encoded as a binding descriptor");
+      if (in->bg_code_va) {
+         if (!prismrv_vk_pds_binding(in->bg_code_va, bg))
+            FAIL(-EFAULT, "background code address cannot be encoded as a binding descriptor");
+         bg2[0] = bg[0]; bg2[1] = 6; bg2[3] = 0x03c0a00f; bg2[4] = 0x070001b5; bg2[5] = 0x07040c02; bg2[6] = 0xaf000000;
+      }
+      uint8_t *pb;
+      if (!(pb = ALLOC(PRISMRV_VK_ARENA_PDS_P, 0x20, 0x20, gl.pds_bg_va)))
+         FAIL(-ENOSPC, "pixel PDS arena full");
+      memcpy(pb, bg, sizeof(bg));
+      if (!(pb = ALLOC(PRISMRV_VK_ARENA_PDS_P, 0x20, 0x20, gl.pds_fs_va)))
+         FAIL(-ENOSPC, "pixel PDS arena full");
+      memcpy(pb, fb, sizeof(fb));
+      if (!(pb = ALLOC(PRISMRV_VK_ARENA_PDS_P, 0x40, 0x10, gl.pds_bg2_va)))
+         FAIL(-ENOSPC, "pixel PDS arena full");
+      memcpy(pb, bg2, sizeof(bg2));
+      bind_va = gl.pds_fs_va;
+      gl.pds_arena2_va = c->arena[PRISMRV_VK_ARENA_PDS_P].va;   /* UNVERIFIED: the captures' second arena base; here the arena itself */
+   }
 
    /* 2. TA stream storage (filled last, once every descriptor VA is known) and the state it needs */
    if (!(p = ALLOC(PRISMRV_VK_ARENA_DATA, PRISMRV_VK_STREAM_MAX_DWORDS * 4, 16, stream_va)))
@@ -225,9 +245,12 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    res->slot = slot;
    res->code_va = code_va;
    res->binding_va = bind_va;
+   res->bg_va = gl.pds_bg_va;
+   res->bg2_va = gl.pds_bg2_va;
+   res->arena2_va = gl.pds_arena2_va;
    res->stream_va = stream_va;
    res->stream_dwords = n;
-   res->unwired = PRISMRV_VK_UNWIRED_FRAGMENT_BINDING_REF | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS;
+   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS;
    return 0;
 #undef FAIL
 }

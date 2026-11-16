@@ -55,12 +55,18 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    const bool stencil_rec = s->stencil_test && s->stencil;
    unsigned i;
 
+   /* heap-6 references (UNVERIFIED on hardware; the encoding (va >> 4, raw for 3D dw30) is exact on 119 captured kicks) */
+   const uint32_t ref_bg = (s->pds_bg_va ? s->pds_bg_va >> 4 : 0x0e401000) & 0x0fffffff;
+   const uint32_t ref_bg2 = (s->pds_bg2_va ? s->pds_bg2_va >> 4 : 0x0e40180c) & 0x0fffffff;
+   const uint32_t ref_fs = (s->pds_fs_va ? s->pds_fs_va >> 4 : 0x0e401002) & 0x0fffffff;
+   const uint32_t arena2 = s->pds_arena2_va ? s->pds_arena2_va : 0xe4018000;
+
    memset(out, 0, sizeof(*out));
 
    /* client CCB header: a template; only dword 7 (surfaces owned: 0x60 | depth 0x80 | stencil 0x100) varies */
    out->ccb[0x00 / 4] = 0x540;
    out->ccb[0x04 / 4] = 0x71;
-   out->ccb[0x08 / 4] = 0x0e401000;
+   out->ccb[0x08 / 4] = ref_bg;
    out->ccb[0x0c / 4] = 0x1001e000;
    out->ccb[0x10 / 4] = 0x16401808;
    out->ccb[0x14 / 4] = 0x0c000000;
@@ -104,7 +110,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    out->three_d[27] = 0x00000088;
    out->three_d[28] = 0x00000400;
    out->three_d[29] = 0x00000010;
-   out->three_d[30] = 0xe4018000;
+   out->three_d[30] = arena2;
    out->three_d[31] = 0x00000003;
    out->three_d[32] = 0x00004000;
 
@@ -119,12 +125,12 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    /* state list A */
    uint32_t isp2 = isp_second_word(s->depth_write, s->stencil, s->depth);
    if (s->stencil) {
-      const uint32_t a[12] = { 0x0000d4c7, isp2, 0x0000f000, 0x0e0200ff, 0x0e401000, 0x0801e000, 0x0e40180c,
+      const uint32_t a[12] = { 0x0000d4c7, isp2, 0x0000f000, 0x0e0200ff, ref_bg, 0x0801e000, ref_bg2,
                                0x80000001, 0x00000001, 0x08001800, 0x00010000, 0 };
       memcpy(out->list_a, a, sizeof(a));
       out->n_a = 12;
    } else {
-      const uint32_t a[11] = { 0x0000d4c3, isp2, 0x0000f000, 0x0e401000, 0x0801e000, 0x0e40180c,
+      const uint32_t a[11] = { 0x0000d4c3, isp2, 0x0000f000, ref_bg, 0x0801e000, ref_bg2,
                                0x80000001, 0x00000001, 0x08001800, 0x00010000, 0 };
       memcpy(out->list_a, a, sizeof(a));
       out->n_a = 11;
@@ -143,7 +149,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    b[n++] = 0x0000f000;
    b[n++] = 0x16401812;
    b[n++] = 0x0803e000;
-   b[n++] = 0x0e401002;
+   b[n++] = ref_fs;
    if (!full) {
       b[n++] = 0x80010001;
       b[n++] = 0x00000000;

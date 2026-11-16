@@ -49,4 +49,35 @@ prismrv_vk_pds_binding(uint32_t code_va, uint32_t out[PRISMRV_VK_PDS_BINDING_DWO
    return true;
 }
 
+/*
+ * The DRAW's fragment-shader binding object (heap 6), the one ISP state list B refers to (dw5, dw6 with a stencil record):
+ *
+ *     [descriptor][dw1][0][dw3][0x070001b5][dw5][dw6][0]            8 dwords, slot pitch 0x20
+ *
+ * Measured on all 119 captured kicks (analysis/FRAGMENT_BINDING_REF.md).  The object is NOT the one prismrv_vk_pds_binding()
+ * builds (that shape, 0x070001a5, is the per-process object CCB header dw2 / list A dw3 point at).
+ *   dw1 = 6 and dw5 = 0x07040c12 on the captures whose fragment shader takes a colour varying (variants3 cfg2/3/4/7/8,
+ *         variants8 cfg5/6), otherwise dw1 = 2 and dw5 = 0xaf000000 (halt).  CAUSE NOT ESTABLISHED: `colour_varying` is the
+ *         observed correlate, not a derived rule (texture-coordinate varyings did not set it).
+ *   dw3 = 0x2fc0000f (0x2f80000f once) on captures with a textured shader and on variants3 cfg2..4/7/8, else 0.  Meaning
+ *         UNKNOWN, so it is a caller-supplied word.
+ *   dw6 = halt when dw3 != 0 or dw5 is not the halt, else 0 (rule fitted to the 13 distinct captured objects).
+ */
+#define PRISMRV_VK_PDS_FS_BINDING_DWORDS 8
+
+static inline bool
+prismrv_vk_pds_fs_binding(uint32_t code_va, bool colour_varying, uint32_t dw3, uint32_t out[PRISMRV_VK_PDS_FS_BINDING_DWORDS])
+{
+   if (!prismrv_vk_shader_descriptor(code_va, &out[0]))
+      return false;
+   out[1] = colour_varying ? 6 : 2;
+   out[2] = 0;
+   out[3] = dw3;
+   out[4] = 0x070001b5;
+   out[5] = colour_varying ? 0x07040c12 : 0xaf000000;
+   out[6] = (colour_varying || dw3) ? 0xaf000000 : 0;
+   out[7] = 0;
+   return true;
+}
+
 #endif
