@@ -77,7 +77,7 @@ struct prismrv_vk_frame_in {
    uint32_t attr1_va, attr1_dwords_m1, attr1_stride;           /* attribute 1, when n_attrs == 2 */
    uint8_t n_attrs;
    bool varying;
-   uint32_t clear_quad_va, index_va;
+   uint32_t clear_quad_va, index_va;   /* clear_quad_va == 0: the context generates the clear triangle's index data */
    uint8_t index_count;
    bool lines;
    /* blocks the caller owns the contents of (copied into the PDS arena) */

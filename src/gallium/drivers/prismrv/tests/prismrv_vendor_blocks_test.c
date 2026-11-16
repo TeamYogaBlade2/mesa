@@ -37,6 +37,11 @@ main(void)
       prismrv_vk_build_access_block(ac[i][0], ac[i][1], &ac[i][6], o);
       if (memcmp(o, ac[i], sizeof(ac[i]))) { fprintf(stderr, "access block %u differs\n", i); fails++; }
    }
+   {
+      uint32_t ix[2];
+      prismrv_vk_build_clear_quad_indices(ix);
+      if (ix[0] != 0x00010000 || ix[1] != 0x00000002) { fprintf(stderr, "clear index data\n"); fails++; }
+   }
    printf("%zu clear-quad blocks, %zu access blocks, %d failures\n", sizeof(cq) / sizeof(cq[0]), sizeof(ac) / sizeof(ac[0]), fails);
    return fails ? 1 : 0;
 }

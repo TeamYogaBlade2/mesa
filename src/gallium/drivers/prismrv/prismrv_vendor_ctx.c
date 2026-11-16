@@ -209,6 +209,14 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    sp.n_attrs = in->n_attrs;
    sp.index_count = in->index_count;
    sp.clear_quad_va = in->clear_quad_va;
+   if (!sp.clear_quad_va) {   /* generate the clear triangle's index data (u16 0,1,2 padded to 8 bytes) */
+      uint32_t cqi[PRISMRV_VK_CLEAR_INDEX_DWORDS];
+      uint8_t *ip = ALLOC(PRISMRV_VK_ARENA_DATA, 8, 8, sp.clear_quad_va);
+      if (!ip)
+         FAIL(-ENOSPC, "data arena full");
+      prismrv_vk_build_clear_quad_indices(cqi);
+      memcpy(ip, cqi, sizeof(cqi));
+   }
    sp.index_va = in->index_va;
    sp.lines = in->lines;
    sp.full = gl.vx == 0 && gl.vy == 0 && gl.vw == (int32_t)gl.width && gl.vh == (int32_t)gl.height;   /* same rule as `full` above */

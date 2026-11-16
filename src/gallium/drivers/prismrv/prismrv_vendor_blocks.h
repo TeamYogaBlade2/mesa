@@ -39,6 +39,18 @@ prismrv_vk_build_clear_quad_vertices(float w, float h, uint32_t colour, uint32_t
 }
 
 /*
+ * Index data of the clear triangle: u16 {0, 1, 2, 0} (indices 0,1,2 padded to 8 bytes).  Every one of the 105 captured kicks
+ * that draw the clear quad starts its index buffer with exactly these 8 bytes; what follows in that buffer belongs to other draws.
+ */
+#define PRISMRV_VK_CLEAR_INDEX_DWORDS 2
+static inline void
+prismrv_vk_build_clear_quad_indices(uint32_t out[PRISMRV_VK_CLEAR_INDEX_DWORDS])
+{
+   out[0] = 0x00010000;
+   out[1] = 0x00000002;
+}
+
+/*
  * Access block: [dw0][dw1][0x3c008081][0x3b808081][0x38000080][0x37800080][dw6][dw7][dw8][dw9].  dw2..dw5 are the same in all 25
  * distinct captured blocks.  dw0 is 0xec01b0dc (0xec01b1dc once, a heap 7 address); dw1 and dw6..dw9 hold values of the
  * userspace driver's own resources (host pointers such as 0x4090b698, memory handles such as 0xa000005b, small integers) that
