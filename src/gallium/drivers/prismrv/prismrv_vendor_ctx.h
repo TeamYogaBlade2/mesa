@@ -27,6 +27,7 @@
 #include "prismrv_vendor_emit.h"
 #include "prismrv_vendor_kick.h"
 #include "prismrv_vendor_hwobj.h"
+#include "prismrv_vendor_blocks.h"
 #include "prismrv_vendor_pds.h"
 #include "prismrv_vendor_stream.h"
 #include "prismrv_vendor_submit.h"
@@ -80,7 +81,8 @@ struct prismrv_vk_frame_in {
    uint8_t index_count;
    bool lines;
    /* blocks the caller owns the contents of (copied into the PDS arena) */
-   const uint32_t *scissor_block; unsigned n_scissor;
+   const uint32_t *scissor_block; unsigned n_scissor;   /* the clear quad's vertex block; or leave empty and set clear_w/clear_h */
+   float clear_w, clear_h; uint32_t clear_colour;      /* generate the block (captured with 128/256 square, colour 0xff000000) */
    const uint32_t *access_block; unsigned n_access;
    /* caller words whose cause is not understood (descriptor-object `var` arguments) */
    uint32_t access_var[5], epi_pair_var[3], epi_out_var[4], epi_hdrless_dw3;

@@ -141,8 +141,14 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    memcpy(p, k.list_a, k.n_a * 4);
    if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, k.n_b * 4, 16, blk_b_va))) FAIL(-ENOSPC, "vertex PDS arena full");
    memcpy(p, k.list_b, k.n_b * 4);
-   if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, in->n_scissor ? in->n_scissor * 4 : 16, 16, sc_va))) FAIL(-ENOSPC, "vertex PDS arena full");
-   if (in->n_scissor) memcpy(p, in->scissor_block, in->n_scissor * 4);
+   if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, in->n_scissor ? in->n_scissor * 4 : PRISMRV_VK_CLEAR_QUAD_DWORDS * 4, 16, sc_va))) FAIL(-ENOSPC, "vertex PDS arena full");
+   if (in->n_scissor)
+      memcpy(p, in->scissor_block, in->n_scissor * 4);
+   else if (in->clear_w > 0 && in->clear_h > 0) {
+      uint32_t cq[PRISMRV_VK_CLEAR_QUAD_DWORDS];
+      prismrv_vk_build_clear_quad_vertices(in->clear_w, in->clear_h, in->clear_colour, cq);
+      memcpy(p, cq, sizeof(cq));
+   }
    if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, in->n_access ? in->n_access * 4 : 16, 16, ac_va))) FAIL(-ENOSPC, "vertex PDS arena full");
    if (in->n_access) memcpy(p, in->access_block, in->n_access * 4);
 

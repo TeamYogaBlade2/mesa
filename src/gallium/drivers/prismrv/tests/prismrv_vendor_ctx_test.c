@@ -237,6 +237,9 @@ main(void)
          bad.hw.rtdata = 0xf004a068;
          CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "misplaced rtdata accepted");
       }
+      /* generated clear-quad vertices land in the scissor block and the descriptor points at them */
+      bad = in; bad.scissor_block = NULL; bad.n_scissor = 0; bad.clear_w = bad.clear_h = 128.0f; bad.clear_colour = 0xff000000;
+      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "generated clear quad refused");
       bad = in; bad.n_attrs = 3;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "3 attributes accepted");
       bad = in; bad.n_attrs = 2; bad.attr1_va = in.attr_va + 12; bad.attr1_dwords_m1 = 3; bad.attr1_stride = 28;
       CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "2 attributes refused: %s", why ? why : "?");

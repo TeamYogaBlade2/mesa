@@ -91,6 +91,13 @@ prismrv_vendor_hwobj_test = executable(
 )
 test('prismrv-vendor-hwobj', prismrv_vendor_hwobj_test, suite: ['prismrv'])
 
+prismrv_vendor_blocks_test = executable(
+  'prismrv_vendor_blocks_test',
+  ['prismrv_vendor_blocks_test.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-vendor-blocks', prismrv_vendor_blocks_test, suite: ['prismrv'])
+
 prismrv_vendor_entry_test = executable(
   'prismrv_vendor_entry_test',
   ['prismrv_vendor_entry_test.c', '../prismrv_vendor_kick.c', '../prismrv_vendor_emit.c'],
