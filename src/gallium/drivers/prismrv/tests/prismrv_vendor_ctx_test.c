@@ -205,7 +205,7 @@ main(void)
       CHECK(rec_cls[9] == 6 && rec_task[9] == 0x1a022201 && rd(&f, rec_va[9]) == 0x2000, "fragment-output epilogue");
    }
 
-   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS), "unwired flags 0x%x", r.unwired);
+   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS | PRISMRV_VK_UNWIRED_HWRC), "unwired flags 0x%x", r.unwired);
 
    /* second frame: next ring slot, no FIRST flag, fresh allocations */
    {
@@ -221,6 +221,22 @@ main(void)
       struct prismrv_vk_frame_result rr;
       struct prismrv_vk_frame_in bad;
 
+      /* handing over the HW objects' mappings: contents are written, only the HWRC (and background program) stay unwired */
+      {
+         struct prismrv_vk_hwobj ho;
+         uint32_t pbm[16], ssm[14], rtm[44], rdm[PRISMRV_VK_RENDER_DETAILS_BYTES / 4];
+         memset(&ho, 0, sizeof(ho));
+         ho.pb_end = 0x80217800; ho.pb_base = 0x80200000; ho.pb_heap10 = 0xc8822000; ho.pb_next = 0xf0001000;
+         ho.sync_obj = 0xe001f000; ho.rtdataset_va = 0xf004a000; ho.rt_ctl = 0xdeadc0de;  /* overridden by hwrc_va */ ho.p0 = 0xf0049000;
+         bad = in; bad.hw.rtdataset = 0xf004a000; bad.hw.rtdata = 0xf004a064; bad.hwobj = &ho;
+         bad.hw_pb_map = pbm; bad.hw_sync_map = ssm; bad.hw_rt_map = rtm; bad.hw_render_details_map = rdm;
+         CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "hw objects refused: %s", why ? why : "?");
+         CHECK(rr.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HWRC), "unwired with hw objects 0x%x", rr.unwired);
+         CHECK(pbm[1] == 0x822 && rtm[6] == in.hwrc_va && rtm[25] == in.hwrc_va && rtm[23] == 0xf004a060 && rdm[0xf8 / 4] == 0xf004a064 && rdm[0xec / 4] == 0xe001e000 &&
+               rdm[0] == 0x10128000, "hw object contents");
+         bad.hw.rtdata = 0xf004a068;
+         CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "misplaced rtdata accepted");
+      }
       bad = in; bad.n_attrs = 3;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "3 attributes accepted");
       bad = in; bad.n_attrs = 2; bad.attr1_va = in.attr_va + 12; bad.attr1_dwords_m1 = 3; bad.attr1_stride = 28;
       CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "2 attributes refused: %s", why ? why : "?");

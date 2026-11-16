@@ -85,7 +85,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    struct prismrv_vk_stream_params sp;
    uint32_t stream_va, code_va, bind_va, blk_a_va, blk_b_va, sc_va, ac_va, a_va, b_va, scd_va, acd_va, vp_va, e0_va, ep_va, eo_va;
    uint32_t w[PRISMRV_VK_STREAM_MAX_DWORDS];
-   bool extrap_b = false;
+   bool extrap_b = false, hw_written;
    uint32_t entry[PRISMRV_VK_ENTRY_BYTES / 4], bos[8 + 32];
    uint8_t *p;
    unsigned n, slot, nb = 0;
@@ -221,6 +221,22 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       FAIL(-ENOTSUP, "stream parameters not representable");
    memcpy(stream_map, w, n * 4);
 
+   /* 5b. HW objects, when the caller handed over their mappings */
+   hw_written = in->hwobj && in->hw_pb_map && in->hw_sync_map && in->hw_rt_map && in->hw_render_details_map;
+   if (hw_written) {
+      if (in->hw.rtdata != in->hw.rtdataset + PRISMRV_VK_RTDATA_OFFSET || in->hwobj->rtdataset_va != in->hw.rtdataset)
+         FAIL(-EINVAL, "rtdata must sit at rtdataset + 0x64 and hwobj->rtdataset_va must equal hw.rtdataset");
+      /* the rtdataset's dw6/dw25 equal sCommand.ui32Data[1] (the HWRC address) in all 119 captured kicks */
+      struct prismrv_vk_hwobj ho = *in->hwobj;
+      ho.rt_ctl = in->hwrc_va;
+      prismrv_vk_build_hwpbdesc(&ho, in->hw_pb_map);
+      prismrv_vk_build_syncinfo(&ho, in->hw_sync_map);
+      prismrv_vk_build_rtdataset(&ho, in->hw_rt_map);
+      memset(in->hw_render_details_map, 0, PRISMRV_VK_RENDER_DETAILS_BYTES);
+      memcpy(in->hw_render_details_map, k.three_d, sizeof(k.three_d));
+      prismrv_vk_build_render_details_tail(&ho, in->hw_render_details_map);
+   }
+
    /* 6. CCB entry into the next ring slot */
    slot = c->ring_next % PRISMRV_VK_RING_ENTRIES;
    prismrv_vk_build_entry(&k, &in->hw, entry);
@@ -257,7 +273,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    res->arena2_va = gl.pds_arena2_va;
    res->stream_va = stream_va;
    res->stream_dwords = n;
-   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS |
+   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | (hw_written ? 0 : PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS) | PRISMRV_VK_UNWIRED_HWRC |
                  (extrap_b ? PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B : 0);
    return 0;
 #undef FAIL

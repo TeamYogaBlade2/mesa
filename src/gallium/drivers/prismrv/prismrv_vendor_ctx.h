@@ -26,6 +26,7 @@
 #include "prismrv_vendor_desc.h"
 #include "prismrv_vendor_emit.h"
 #include "prismrv_vendor_kick.h"
+#include "prismrv_vendor_hwobj.h"
 #include "prismrv_vendor_pds.h"
 #include "prismrv_vendor_stream.h"
 #include "prismrv_vendor_submit.h"
@@ -86,6 +87,12 @@ struct prismrv_vk_frame_in {
    /* VAs of the HW objects the CCB entry points at (caller allocated and filled) */
    struct prismrv_vk_alloc hw;
    uint32_t render_details_va;
+   /*
+    * Optional CPU mappings of the caller's HW objects (hw.hwpbdesc / syncinfo / rtdataset / render_details_va).  When all are
+    * given together with `hwobj`, the context writes their contents (prismrv_vendor_hwobj.h); otherwise the caller owns them.
+    */
+   const struct prismrv_vk_hwobj *hwobj;
+   uint32_t *hw_pb_map, *hw_sync_map, *hw_rt_map, *hw_render_details_map;
    uint32_t hwrc_va;
    const uint32_t *extra_bos; unsigned n_extra_bos;   /* BOs the GPU touches that this context did not allocate */
    /* fragment binding object variant words (cause unknown, see prismrv_vk_pds_fs_binding) */
@@ -98,7 +105,8 @@ struct prismrv_vk_frame_in {
 enum prismrv_vk_unwired {
    PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* no bg_code_va: the process-constant objects list A / CCB dw2 refer to are zero */
    PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B  = 1u << 2,   /* list B control word came from the fitted rule, not from a capture */
-   PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / HWRC are the caller's */
+   PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / render details not written by the context (caller's) */
+   PRISMRV_VK_UNWIRED_HWRC                 = 1u << 3,   /* hwrc_va's contents are the caller's: never captured with content */
 };
 
 struct prismrv_vk_frame_result {

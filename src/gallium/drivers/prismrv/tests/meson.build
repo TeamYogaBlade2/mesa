@@ -84,6 +84,13 @@ prismrv_vendor_fsbind_test = executable(
 )
 test('prismrv-vendor-fsbind', prismrv_vendor_fsbind_test, suite: ['prismrv'])
 
+prismrv_vendor_hwobj_test = executable(
+  'prismrv_vendor_hwobj_test',
+  ['prismrv_vendor_hwobj_test.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-vendor-hwobj', prismrv_vendor_hwobj_test, suite: ['prismrv'])
+
 prismrv_vendor_entry_test = executable(
   'prismrv_vendor_entry_test',
   ['prismrv_vendor_entry_test.c', '../prismrv_vendor_kick.c', '../prismrv_vendor_emit.c'],
