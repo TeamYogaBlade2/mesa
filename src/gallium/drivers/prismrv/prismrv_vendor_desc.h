@@ -17,6 +17,7 @@
 #ifndef PRISMRV_VENDOR_DESC_H
 #define PRISMRV_VENDOR_DESC_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #define PRISMRV_VK_DESC_STATE_LIST_DWORDS   20
@@ -30,6 +31,9 @@
 /* state list; task = 0x1a022203/04/05/07, count = the state block's dword count.  The control word comes from the measured
  * (task, count) table: 03:{8,11} 04:{12} 05:{17,18} 07:{17,19}; any other pair is refused. */
 unsigned prismrv_vk_desc_state_list(uint32_t task, uint32_t block_va, uint32_t count, uint32_t *out);
+
+/* as above, but also accepts list-B counts 17..20 by the fitted rule ctl = 0x20002 + count*0x40; *extrapolated tells the caller */
+unsigned prismrv_vk_desc_state_list_ex(uint32_t task, uint32_t block_va, uint32_t count, uint32_t *out, bool *extrapolated);
 
 /* scissor object (task 0x05800202, class 7): only the block VA moves */
 unsigned prismrv_vk_desc_scissor(uint32_t block_va, uint32_t *out);

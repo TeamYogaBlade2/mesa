@@ -85,6 +85,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    struct prismrv_vk_stream_params sp;
    uint32_t stream_va, code_va, bind_va, blk_a_va, blk_b_va, sc_va, ac_va, a_va, b_va, scd_va, acd_va, vp_va, e0_va, ep_va, eo_va;
    uint32_t w[PRISMRV_VK_STREAM_MAX_DWORDS];
+   bool extrap_b = false;
    uint32_t entry[PRISMRV_VK_ENTRY_BYTES / 4], bos[8 + 32];
    uint8_t *p;
    unsigned n, slot, nb = 0;
@@ -158,8 +159,8 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, a_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
-      len = prismrv_vk_desc_state_list(task_b, blk_b_va, k.n_b, o);
-      if (!len) FAIL(-ENOTSUP, "state list B: dword count not measured");
+      len = prismrv_vk_desc_state_list_ex(task_b, blk_b_va, k.n_b, o, &extrap_b);
+      if (!len) FAIL(-ENOTSUP, "state list B: dword count outside the measured/fitted range");
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, b_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
@@ -250,7 +251,8 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    res->arena2_va = gl.pds_arena2_va;
    res->stream_va = stream_va;
    res->stream_dwords = n;
-   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS;
+   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS |
+                 (extrap_b ? PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B : 0);
    return 0;
 #undef FAIL
 }

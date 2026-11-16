@@ -96,6 +96,7 @@ struct prismrv_vk_frame_in {
 
 enum prismrv_vk_unwired {
    PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* no bg_code_va: the process-constant objects list A / CCB dw2 refer to are zero */
+   PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B  = 1u << 2,   /* list B control word came from the fitted rule, not from a capture */
    PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / HWRC are the caller's */
 };
 

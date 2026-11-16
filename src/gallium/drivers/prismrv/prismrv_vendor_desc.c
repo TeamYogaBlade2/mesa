@@ -30,6 +30,30 @@ prismrv_vk_desc_state_list(uint32_t task, uint32_t block_va, uint32_t count, uin
    return 0;
 }
 
+/*
+ * List B control word: for tasks 05/07 every measured pair (17, 18, 19; four pairs) equals 0x20002 + count * 0x40.  List A does
+ * not follow a single rule (8 -> 0x280, 11 -> 0x312, 12 -> 0x342), so it is never extrapolated.  *extrapolated is set when the
+ * pair is not in the measured table, i.e. the control word is a fit and NOT a capture (e.g. stencil record + partial viewport,
+ * count 20).
+ */
+unsigned
+prismrv_vk_desc_state_list_ex(uint32_t task, uint32_t block_va, uint32_t count, uint32_t *out, bool *extrapolated)
+{
+   unsigned n = prismrv_vk_desc_state_list(task, block_va, count, out);
+
+   *extrapolated = false;
+   if (n || (task != 0x1a022205 && task != 0x1a022207) || count < 17 || count > 20)
+      return n;
+   static const uint32_t code[8] = { 0x87000000, 0x90000006, 0x07000103, 0x87040000, 0x90000006, 0x07040103, 0x07080185, 0xaf000000 };
+   memset(out, 0, PRISMRV_VK_DESC_STATE_LIST_DWORDS * 4);
+   out[0] = block_va;
+   out[1] = count;
+   out[8] = 0x20002 + count * 0x40;
+   memcpy(out + 12, code, sizeof(code));
+   *extrapolated = true;
+   return PRISMRV_VK_DESC_STATE_LIST_DWORDS;
+}
+
 unsigned
 prismrv_vk_desc_scissor(uint32_t block_va, uint32_t *out)
 {

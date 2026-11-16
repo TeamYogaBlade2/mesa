@@ -224,9 +224,11 @@ main(void)
       bad = in; bad.n_attrs = 2;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "2 attributes accepted");
       bad = in; bad.code_size = 12;             CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "code size 12 accepted");
       bad = in; bad.code = NULL;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "no code accepted");
-      /* stencil test + partial viewport -> state list B of 20 dwords, never measured */
+      /* stencil test + partial viewport -> state list B of 20 dwords: never captured, accepted through the fitted control word
+       * rule and flagged */
       bad = in; bad.gl.stencil = true; bad.gl.stencil_test = true; bad.gl.vw = 32;
-      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -ENOTSUP, "unmeasured state-list count accepted");
+      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0 && (rr.unwired & PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B),
+            "20-dword list B not accepted as extrapolated (unwired 0x%x)", rr.unwired);
       f.submit_ret = -EIO;
       CHECK(prismrv_vk_ctx_frame(&c, &in, &rr, &why) == -EIO, "submit failure not propagated");
       f.submit_ret = 0;
