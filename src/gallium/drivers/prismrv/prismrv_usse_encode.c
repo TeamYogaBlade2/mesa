@@ -283,7 +283,7 @@ prismrv_usse_encode_bitwise(const struct prismrv_usse_bitwise *in, uint64_t *out
    uint64_t w;
 
    if (in->op >= sizeof(op1) || in->pred >= sizeof(pred_bits) || pred_bits[in->pred] < 0 ||
-       in->repeat < 1 || in->repeat > 16 || (in->flags & ~31u) || in->invert2 > 1)
+       in->repeat < 1 || in->repeat > 16 || (in->flags & ~63u) || in->invert2 > 1)
       return false;
    db = bw_dst_bank(in->dst.bank, &dv);
    b1 = bw_src_bank(in->src1.bank, &v1, &imm1);
@@ -303,6 +303,7 @@ prismrv_usse_encode_bitwise(const struct prismrv_usse_bitwise *in, uint64_t *out
    if (in->flags & PRISMRV_USSE_BW_PARTIAL) w |= BIT64(34);
    if (in->flags & PRISMRV_USSE_BW_END)     w |= BIT64(50);
    if (in->flags & PRISMRV_USSE_BW_SYNCS)   w |= BIT64(52);
+   if (in->flags & PRISMRV_USSE_BW_ONCEONLY) w |= BIT64(53);
    if (in->flags & PRISMRV_USSE_BW_NOSCHED) w |= BIT64(54);
    if (in->flags & PRISMRV_USSE_BW_SKIPINV) w |= BIT64(55);
    *out = w;

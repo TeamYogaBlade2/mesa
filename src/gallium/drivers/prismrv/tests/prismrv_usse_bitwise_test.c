@@ -56,7 +56,7 @@ main(void)
    bad[4].dst.val = 128;
    bad[5].repeat = 0;
    bad[6].repeat = 17;
-   bad[7].flags = 32;
+   bad[7].flags = 64;   /* 32 is PRISMRV_USSE_BW_ONCEONLY now */
    bad[8].op = 7;
    bad[9].pred = PRISMRV_USSE_PRED_NOT_P2;
    bad[10].src1.bank = PRISMRV_USSE_BANK_I;   bad[10].src1.val = 4;

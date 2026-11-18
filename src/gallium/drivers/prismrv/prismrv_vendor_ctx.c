@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: MIT
  */
 #include "prismrv_vendor_ctx.h"
+#include "prismrv_vendor_bgprog.h"
 
 #include <errno.h>
 #include <string.h>
@@ -108,10 +109,30 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
 
       if (!prismrv_vk_pds_fs_binding(code_va, in->colour_varying, in->fs_bind_dw3, fb))
          FAIL(-EFAULT, "code address cannot be encoded as a binding descriptor");
-      if (in->bg_code_va) {
-         if (!prismrv_vk_pds_binding(in->bg_code_va, bg))
+      uint32_t bg_end_va = in->bg_code_va, bg_clear_va = in->bg_code_va;
+
+      if (!in->bg_code_va) {
+         /* the per-process objects' programs, generated with this driver's encoder (analysis/BACKGROUND_PROGRAMS.md) */
+         uint32_t pe[PRISMRV_VK_BG_END_DWORDS], pc[PRISMRV_VK_BG_CLEAR_DWORDS];
+         uint8_t *q;
+
+         prismrv_vk_build_bg_end(pe);
+         if (!prismrv_vk_build_bg_clear(pc))
+            FAIL(-EFAULT, "background clear program cannot be encoded");
+         if (!(q = ALLOC(PRISMRV_VK_ARENA_CODE, sizeof(pe), 8, bg_end_va)))
+            FAIL(-ENOSPC, "code arena full");
+         memcpy(q, pe, sizeof(pe));
+         if (!(q = ALLOC(PRISMRV_VK_ARENA_CODE, sizeof(pc), 8, bg_clear_va)))
+            FAIL(-ENOSPC, "code arena full");
+         memcpy(q, pc, sizeof(pc));
+      }
+      if (!prismrv_vk_pds_binding(bg_end_va, bg))
+         FAIL(-EFAULT, "background code address cannot be encoded as a binding descriptor");
+      {
+         uint32_t d2;
+         if (!prismrv_vk_shader_descriptor(bg_clear_va, &d2))
             FAIL(-EFAULT, "background code address cannot be encoded as a binding descriptor");
-         bg2[0] = bg[0]; bg2[1] = 6; bg2[3] = 0x03c0a00f; bg2[4] = 0x070001b5; bg2[5] = 0x07040c02; bg2[6] = 0xaf000000;
+         bg2[0] = d2; bg2[1] = 6; bg2[3] = 0x03c0a00f; bg2[4] = 0x070001b5; bg2[5] = 0x07040c02; bg2[6] = 0xaf000000;
       }
       uint8_t *pb;
       if (!(pb = ALLOC(PRISMRV_VK_ARENA_PDS_P, 0x20, 0x20, gl.pds_bg_va)))
@@ -287,7 +308,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    res->arena2_va = gl.pds_arena2_va;
    res->stream_va = stream_va;
    res->stream_dwords = n;
-   res->unwired = (in->bg_code_va ? 0 : PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM) | (hw_written ? 0 : PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS) | PRISMRV_VK_UNWIRED_HWRC |
+   res->unwired = (hw_written ? 0 : PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS) | PRISMRV_VK_UNWIRED_HWRC |
                  (extrap_b ? PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B : 0);
    return 0;
 #undef FAIL

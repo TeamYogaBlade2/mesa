@@ -259,6 +259,7 @@ enum prismrv_usse_bw_op {
 #define PRISMRV_USSE_BW_SYNCS   (1u << 2)
 #define PRISMRV_USSE_BW_NOSCHED (1u << 3)
 #define PRISMRV_USSE_BW_SKIPINV (1u << 4)
+#define PRISMRV_USSE_BW_ONCEONLY (1u << 5)   /* bit 53; set on the clear/background program's copy (captures, analysis/BACKGROUND_PROGRAMS.md) */
 
 struct prismrv_usse_bw_operand {
    uint8_t bank;             /* enum prismrv_usse_bank: R O PA SA I IMM */

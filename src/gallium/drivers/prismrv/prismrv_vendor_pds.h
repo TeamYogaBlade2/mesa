@@ -31,6 +31,31 @@ prismrv_vk_shader_descriptor(uint32_t code_va, uint32_t *out)
    return true;
 }
 
+/*
+ * Code handles: w = (((code_va - code_base) >> 3) << 4) | nibble, nibble 7 for the pixel heap's programs (PDS records) and 2 for
+ * the vertex heap's programs (a vertex program object's ctl word at dw[4n], an access object's at dw4).  code_base is the
+ * code-base register value of the heap (the UMD's per run constant, 0xf4000668 / 0xfc000010 in the captures; analysis/CODE_HANDLES.md):
+ * exact on 40 distinct (base, VA, handle) captured tuples.  The hardware adds the same base, so the driver must encode with the base
+ * its kernel programs.
+ */
+#define PRISMRV_VK_HANDLE_PIXEL  7u
+#define PRISMRV_VK_HANDLE_VERTEX 2u
+
+static inline bool
+prismrv_vk_code_handle(uint32_t code_base, uint32_t code_va, uint32_t nibble, uint32_t *out)
+{
+   if (code_va < code_base || (code_va & 7) || ((code_va - code_base) >> 3) >= (1u << 28) || nibble > 0xf)
+      return false;
+   *out = (((code_va - code_base) >> 3) << 4) | nibble;
+   return true;
+}
+
+static inline uint32_t
+prismrv_vk_code_handle_va(uint32_t code_base, uint32_t handle)
+{
+   return code_base + ((handle >> 4) << 3);
+}
+
 static inline uint32_t
 prismrv_vk_shader_descriptor_va(uint32_t desc)
 {

@@ -205,7 +205,7 @@ main(void)
       CHECK(rec_cls[9] == 6 && rec_task[9] == 0x1a022201 && rd(&f, rec_va[9]) == 0x2000, "fragment-output epilogue");
    }
 
-   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS | PRISMRV_VK_UNWIRED_HWRC), "unwired flags 0x%x", r.unwired);
+   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS | PRISMRV_VK_UNWIRED_HWRC), "unwired flags 0x%x", r.unwired);
 
    /* second frame: next ring slot, no FIRST flag, fresh allocations */
    {
@@ -213,7 +213,8 @@ main(void)
       CHECK(prismrv_vk_ctx_frame(&c, &in, &r2, &why) == 0, "frame 2: %s", why);
       CHECK(f.last.ccb_offset == PRISMRV_VK_ENTRY_BYTES + 0x50, "slot 1 offset 0x%x", f.last.ccb_offset);
       CHECK(f.last.flags == PRISMRV_VKICK_LAST_IN_SCENE, "second kick flags 0x%x", f.last.flags);
-      CHECK(r2.code_va == r.code_va + in.code_size, "second code lands after the first (0x%08x)", r2.code_va);
+      /* each frame also places the 8-byte END and the 16-byte CLEAR background programs after the shader code */
+      CHECK(r2.code_va == r.code_va + ((in.code_size + 7u) & ~7u) + 24, "second code lands after the first frame's code and background programs (0x%08x)", r2.code_va);
    }
 
    /* refusals */
@@ -231,7 +232,7 @@ main(void)
          bad = in; bad.hw.rtdataset = 0xf004a000; bad.hw.rtdata = 0xf004a064; bad.hwobj = &ho;
          bad.hw_pb_map = pbm; bad.hw_sync_map = ssm; bad.hw_rt_map = rtm; bad.hw_render_details_map = rdm;
          CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "hw objects refused: %s", why ? why : "?");
-         CHECK(rr.unwired == (PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM | PRISMRV_VK_UNWIRED_HWRC), "unwired with hw objects 0x%x", rr.unwired);
+         CHECK(rr.unwired == PRISMRV_VK_UNWIRED_HWRC, "unwired with hw objects 0x%x", rr.unwired);
          CHECK(pbm[1] == 0x822 && rtm[6] == in.hwrc_va && rtm[25] == in.hwrc_va && rtm[23] == 0xf004a060 && rdm[0xf8 / 4] == 0xf004a064 && rdm[0xec / 4] == 0xe001e000 &&
                rdm[0] == 0x10128000, "hw object contents");
          bad.hw.rtdata = 0xf004a068;

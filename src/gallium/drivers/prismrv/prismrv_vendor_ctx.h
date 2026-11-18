@@ -100,12 +100,12 @@ struct prismrv_vk_frame_in {
    /* fragment binding object variant words (cause unknown, see prismrv_vk_pds_fs_binding) */
    bool colour_varying;
    uint32_t fs_bind_dw3;
-   /* USSE code (heap 4) of the per-process background program the CCB header / list A refer to; 0 = not available */
+   /* USSE code of a caller-supplied background program (used for both objects); 0 = the context generates them */
    uint32_t bg_code_va;
 };
 
 enum prismrv_vk_unwired {
-   PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* no bg_code_va: the process-constant objects list A / CCB dw2 refer to are zero */
+   PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* unused since the background programs are generated (bg_code_va == 0); kept for ABI */
    PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B  = 1u << 2,   /* list B control word came from the fitted rule, not from a capture */
    PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / render details not written by the context (caller's) */
    PRISMRV_VK_UNWIRED_HWRC                 = 1u << 3,   /* hwrc_va's contents are the caller's: never captured with content */
