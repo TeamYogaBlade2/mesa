@@ -304,7 +304,7 @@ prismrv_usse_encode_vmov(const struct prismrv_usse_vmov *in, uint64_t *out)
    unsigned field, hw, o, pa, pb;
    int preset;
 
-   if (in->type > PRISMRV_USSE_MOV_I32 || in->repeat < 1 || in->repeat > 4 ||
+   if (in->type > PRISMRV_USSE_MOV_FLT || in->repeat < 1 || in->repeat > 4 ||
        (in->flags & ~15u) || !pred_to_bits(in->pred, true, &pb))
       return false;
    if (!in->dst.mask || in->dst.mask > PRISMRV_USSE_MASK_XYZW)
@@ -325,6 +325,14 @@ prismrv_usse_encode_vmov(const struct prismrv_usse_vmov *in, uint64_t *out)
        !dst_bank_bits(hw, &w))
       return false;
    w |= (uint64_t)field << 18 | (uint64_t)in->dst.mask << 24;
+   if (in->src.bank == PRISMRV_USSE_BANK_C) {
+      /* hardware constants: the extended source bank (word bit 49 set, bits 31:30 = 1), register field 1:1 at 11:6 */
+      if (in->src.reg > 63)
+         return false;
+      w |= (uint64_t)in->src.reg << 6 | BIT64(30) | BIT64(49) | (uint64_t)preset << 35;
+      *out = w;
+      return true;
+   }
    if (!reg_field(in->src.bank, in->src.reg, 1, &field, &hw) ||
        !src_bank_bits(hw, &o, &pa))
       return false;
@@ -344,7 +352,9 @@ prismrv_usse_decode_vmov(uint64_t w, struct prismrv_usse_vmov *out)
    struct prismrv_usse_vmov d;
    unsigned hw;
 
-   if (BITS(w, 63, 59) != 7 || (w & must_be_zero) || BITS(w, 42, 40) > 2)
+   const bool csrc = GET(w, 49) && BITS(w, 31, 30) == 1;   /* constant-bank source */
+
+   if (BITS(w, 63, 59) != 7 || (w & (must_be_zero & ~(csrc ? BIT64(49) : 0))) || BITS(w, 42, 40) > 5)
       return false;
    memset(&d, 0, sizeof(d));
    if (!pred_from_bits(BITS(w, 58, 56), true, &d.pred) ||
@@ -358,8 +368,13 @@ prismrv_usse_decode_vmov(uint64_t w, struct prismrv_usse_vmov *out)
              (GET(w, 55) ? PRISMRV_USSE_FLAG_SKIPINV : 0);
    field_reg(hw, BITS(w, 23, 18), 1, &d.dst.bank, &d.dst.reg);
    d.dst.mask = BITS(w, 27, 24);
-   field_reg(src_bank_from_bits(GET(w, 30), GET(w, 31)), BITS(w, 11, 6), 1,
-             &d.src.bank, &d.src.reg);
+   if (csrc) {
+      d.src.bank = PRISMRV_USSE_BANK_C;
+      d.src.reg = BITS(w, 11, 6);
+   } else {
+      field_reg(src_bank_from_bits(GET(w, 30), GET(w, 31)), BITS(w, 11, 6), 1,
+                &d.src.bank, &d.src.reg);
+   }
    memcpy(d.src.swz, swz16[BITS(w, 38, 35)], 5);
    *out = d;
    return true;
@@ -386,7 +401,7 @@ prismrv_usse_encode_vpck(const struct prismrv_usse_vpck *in, uint64_t *out)
    unsigned field, o, pa, ext;
    bool f32 = in->src_fmt == PRISMRV_USSE_PCK_F32;
 
-   if ((in->src_fmt != PRISMRV_USSE_PCK_F16 && !f32) || (in->flags & ~15u) ||
+   if ((in->src_fmt != PRISMRV_USSE_PCK_F16 && !f32) || (in->flags & ~31u) ||
        (in->pred != PRISMRV_USSE_PRED_NONE && in->pred != PRISMRV_USSE_PRED_P0))
       return false;
    w |= (uint64_t)in->src_fmt << 41;
@@ -394,6 +409,7 @@ prismrv_usse_encode_vpck(const struct prismrv_usse_vpck *in, uint64_t *out)
    if (in->flags & PRISMRV_USSE_FLAG_END)     w |= BIT64(50);
    if (in->flags & PRISMRV_USSE_FLAG_SYNCS)   w |= BIT64(52);
    if (in->flags & PRISMRV_USSE_FLAG_SKIPINV) w |= BIT64(55);
+   if (in->flags & PRISMRV_USSE_FLAG_ONCEONLY) w |= BIT64(53);
    if (in->pred == PRISMRV_USSE_PRED_P0)      w |= BIT64(56);
 
    if (!in->dst.mask || in->dst.mask > PRISMRV_USSE_MASK_XYZW ||
@@ -441,7 +457,7 @@ prismrv_usse_decode_vpck(uint64_t w, struct prismrv_usse_vpck *out)
    unsigned hw, p;
    bool f32;
 
-   if (BITS(w, 63, 59) != 8 || !GET(w, 18) || GET(w, 53) || BITS(w, 47, 44) ||
+   if (BITS(w, 63, 59) != 8 || !GET(w, 18) || BITS(w, 47, 44) ||
        BITS(w, 40, 38) != 0)
       return false;
    f32 = BITS(w, 43, 41) == 6;
@@ -459,7 +475,8 @@ prismrv_usse_decode_vpck(uint64_t w, struct prismrv_usse_vpck *out)
    d.flags = (GET(w, 54) ? PRISMRV_USSE_FLAG_NOSCHED : 0) |
              (GET(w, 50) ? PRISMRV_USSE_FLAG_END : 0) |
              (GET(w, 52) ? PRISMRV_USSE_FLAG_SYNCS : 0) |
-             (GET(w, 55) ? PRISMRV_USSE_FLAG_SKIPINV : 0);
+             (GET(w, 55) ? PRISMRV_USSE_FLAG_SKIPINV : 0) |
+             (GET(w, 53) ? PRISMRV_USSE_FLAG_ONCEONLY : 0);
    d.dst.bank = hw;
    d.dst.reg = BITS(w, 27, 21);
    d.dst.mask = BITS(w, 37, 34);
@@ -690,5 +707,28 @@ prismrv_usse_encode_smp(const struct prismrv_usse_smp *in, uint64_t *out)
    if (in->flags & PRISMRV_USSE_FLAG_SYNCS)   w |= BIT64(52);
    if (in->flags & PRISMRV_USSE_FLAG_SKIPINV) w |= BIT64(55);
    *out = w;
+   return true;
+}
+
+bool
+prismrv_usse_encode_vunpck_u8f32(unsigned byte, unsigned dst_reg, unsigned dst_mask, unsigned src_reg, unsigned flags, uint64_t *out)
+{
+   /* byte index -> extra bits of the low word, measured on the four unpack words (see the header comment) */
+   static const uint32_t sel[4] = { 0, 0x00094001, 0x00128002, 0x001bc003 };
+   uint32_t lo, hi;
+
+   if (byte > 3 || dst_reg > 127 || (dst_mask != PRISMRV_USSE_MASK_X && dst_mask != PRISMRV_USSE_MASK_Y) ||
+       src_reg != 3 || (flags & ~(PRISMRV_USSE_FLAG_ONCEONLY | PRISMRV_USSE_FLAG_SKIPINV | PRISMRV_USSE_FLAG_NOSCHED |
+                                  PRISMRV_USSE_FLAG_SYNCS)))
+      return false;
+   /* hi: opcode 01000, dst type f32 (hi[8:6] = 6), src type u8, dst bank o (hi bit 0), lane at hi[5:2] */
+   hi = 0x40000181u | (dst_mask << 2);
+   if (flags & PRISMRV_USSE_FLAG_ONCEONLY) hi |= 1u << 21;
+   if (flags & PRISMRV_USSE_FLAG_SKIPINV) hi |= 1u << 23;
+   if (flags & PRISMRV_USSE_FLAG_NOSCHED) hi |= 1u << 22;     /* word bit 54 */
+   if (flags & PRISMRV_USSE_FLAG_SYNCS) hi |= 1u << 20;       /* word bit 52 */
+   /* lo: scale (bit 18), src bank o (bit 31), bit 29, dst reg lo[27:21], src reg lo[13:7] */
+   lo = (1u << 31) | (1u << 29) | (1u << 18) | (dst_reg << 21) | (src_reg << 7) | sel[byte];
+   *out = (uint64_t)hi << 32 | lo;
    return true;
 }

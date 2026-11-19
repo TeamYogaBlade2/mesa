@@ -166,7 +166,18 @@ main(void)
    CHECK(!prismrv_usse_encode_vmov(&m, &w), "repeat 5 accepted");
    m = okm(); m.dst.mask = 0;
    CHECK(!prismrv_usse_encode_vmov(&m, &w), "empty vmov mask accepted");
-   CHECK(!prismrv_usse_decode_vmov(UINT64_C(7) << 59 | (UINT64_C(5) << 40), &m), "vmov.flt decoded");
+   CHECK(!prismrv_usse_decode_vmov(UINT64_C(7) << 59 | (UINT64_C(6) << 40), &m), "undefined vmov type 6 decoded");
+   /* type 5 (flt) and the constant-bank source are encodable (oracle gpu_emu/isa.py _decode_vmov) */
+   {
+      struct prismrv_usse_vmov f = { .type = PRISMRV_USSE_MOV_FLT, .repeat = 1, .flags = PRISMRV_USSE_FLAG_SKIPINV,
+                                     .dst = { PRISMRV_USSE_BANK_O, 1, PRISMRV_USSE_MASK_Y },
+                                     .src = { .bank = PRISMRV_USSE_BANK_C, .reg = 3, .swz = "xxxx" } }, back;
+      uint64_t fw;
+      CHECK(prismrv_usse_encode_vmov(&f, &fw) && fw == UINT64_C(0x38820501420400c0), "vmov flt o1.y <- c3 word %016llx", (unsigned long long)fw);
+      CHECK(prismrv_usse_decode_vmov(fw, &back) && !memcmp(&back, &f, sizeof f), "vmov flt/c round trip");
+      f.src.reg = 64;
+      CHECK(!prismrv_usse_encode_vmov(&f, &fw), "c64 accepted");
+   }
    CHECK(!prismrv_usse_decode_vmov(UINT64_C(7) << 59 | 1, &m), "vmov with reserved bit decoded");
 
    {

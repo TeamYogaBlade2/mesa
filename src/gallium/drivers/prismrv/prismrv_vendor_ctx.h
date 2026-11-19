@@ -50,6 +50,7 @@ struct prismrv_vk_arena {
 enum prismrv_vk_arena_id {
    PRISMRV_VK_ARENA_CCB,       /* client CCB ring, kernel-data heap */
    PRISMRV_VK_ARENA_CODE,      /* USSE shader code, pixel USSE heap */
+   PRISMRV_VK_ARENA_VCODE,     /* vertex USSE heap: user VS, clear VS, state-list copy programs, END, epilogue pair */
    PRISMRV_VK_ARENA_PDS_V,     /* descriptor objects + state blocks, vertex PDS heap */
    PRISMRV_VK_ARENA_PDS_P,     /* fragment USSE binding objects, pixel PDS heap */
    PRISMRV_VK_ARENA_DATA,      /* TA stream, default window */
@@ -73,6 +74,7 @@ struct prismrv_vk_frame_in {
    const void *code;                  /* fragment USSE code */
    uint32_t code_size;                /* multiple of 8 */
    /* standard shape: one attribute, one clear quad, one indexed draw */
+   const void *vs_code; unsigned vs_code_size;                  /* vertex shader in the vendor VS ABI (phas ... emitpds taske); 0 = use vprog_ctl */
    uint32_t attr_va, attr_dwords_m1, attr_stride, vprog_ctl;   /* attribute 0 */
    uint32_t attr1_va, attr1_dwords_m1, attr1_stride;           /* attribute 1, when n_attrs == 2 */
    uint8_t n_attrs;
@@ -108,7 +110,8 @@ enum prismrv_vk_unwired {
    PRISMRV_VK_UNWIRED_BACKGROUND_PROGRAM   = 1u << 0,   /* unused since the background programs are generated (bg_code_va == 0); kept for ABI */
    PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B  = 1u << 2,   /* list B control word came from the fitted rule, not from a capture */
    PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS   = 1u << 1,   /* HWPBDESC / rtdataset / sync info / render details not written by the context (caller's) */
-   PRISMRV_VK_UNWIRED_HWRC                 = 1u << 3,   /* hwrc_va's contents are the caller's: never captured with content */
+   PRISMRV_VK_UNWIRED_HWRC                 = 1u << 3,
+   PRISMRV_VK_UNWIRED_VS_CODE              = 1u << 4,   /* no vs_code: the vertex program's ctl is the caller's vprog_ctl (the driver's VS ABI is not the vendor's yet) */   /* hwrc_va's contents are the caller's: never captured with content */
 };
 
 struct prismrv_vk_frame_result {

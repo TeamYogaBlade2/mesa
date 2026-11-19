@@ -200,12 +200,15 @@ main(void)
       /* [4] vertex program: class f, object dw0 = the attribute VA */
       CHECK(rec_cls[4] == 0xf && rd(&f, rec_va[4]) == in.attr_va && rd(&f, rec_va[4] + 16) == in.vprog_ctl, "record 4 is not the vertex program");
       /* [5..9] epilogues: header-less, three sharing one pair object, and the fragment-output object */
-      CHECK(rec_task[5] == 0x0800e100 && rd(&f, rec_va[5]) == 0x0002ffe2, "epilogue 0");
+      /* the header-less epilogue's ctl is the handle of the END program the context placed in the vertex code heap (nibble 2) */
+      CHECK(rec_task[5] == 0x0800e100 && (rd(&f, rec_va[5]) & 0xf) == PRISMRV_VK_HANDLE_VERTEX &&
+            prismrv_vk_code_handle_va(PRISMRV_VK_VCODE_HEAP_BASE, rd(&f, rec_va[5])) >= 0xfc000000 &&
+            rd(&f, prismrv_vk_code_handle_va(PRISMRV_VK_VCODE_HEAP_BASE, rd(&f, rec_va[5])) + 4) == 0xfa4c0700, "epilogue 0");
       CHECK(rec_va[6] == rec_va[7] && rec_va[7] == rec_va[8] && rd(&f, rec_va[6]) == 0x800, "pair epilogues do not share one object");
       CHECK(rec_cls[9] == 6 && rec_task[9] == 0x1a022201 && rd(&f, rec_va[9]) == 0x2000, "fragment-output epilogue");
    }
 
-   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS | PRISMRV_VK_UNWIRED_HWRC), "unwired flags 0x%x", r.unwired);
+   CHECK(r.unwired == (PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS | PRISMRV_VK_UNWIRED_HWRC | PRISMRV_VK_UNWIRED_VS_CODE), "unwired flags 0x%x", r.unwired);
 
    /* second frame: next ring slot, no FIRST flag, fresh allocations */
    {
@@ -232,7 +235,7 @@ main(void)
          bad = in; bad.hw.rtdataset = 0xf004a000; bad.hw.rtdata = 0xf004a064; bad.hwobj = &ho;
          bad.hw_pb_map = pbm; bad.hw_sync_map = ssm; bad.hw_rt_map = rtm; bad.hw_render_details_map = rdm;
          CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "hw objects refused: %s", why ? why : "?");
-         CHECK(rr.unwired == PRISMRV_VK_UNWIRED_HWRC, "unwired with hw objects 0x%x", rr.unwired);
+         CHECK(rr.unwired == (PRISMRV_VK_UNWIRED_HWRC | PRISMRV_VK_UNWIRED_VS_CODE), "unwired with hw objects 0x%x", rr.unwired);
          CHECK(pbm[1] == 0x822 && rtm[6] == in.hwrc_va && rtm[25] == in.hwrc_va && rtm[23] == 0xf004a060 && rdm[0xf8 / 4] == 0xf004a064 && rdm[0xec / 4] == 0xe001e000 &&
                rdm[0] == 0x10128000, "hw object contents");
          bad.hw.rtdata = 0xf004a068;
@@ -246,11 +249,11 @@ main(void)
       CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0, "2 attributes refused: %s", why ? why : "?");
       bad = in; bad.code_size = 12;             CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "code size 12 accepted");
       bad = in; bad.code = NULL;                CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == -EINVAL, "no code accepted");
-      /* stencil test + partial viewport -> state list B of 20 dwords: never captured, accepted through the fitted control word
-       * rule and flagged */
+      /* stencil test + partial viewport -> state list B of 20 dwords: never captured; the context places its own 21-dword copy
+       * program in the vertex heap, so it is accepted and nothing is extrapolated */
       bad = in; bad.gl.stencil = true; bad.gl.stencil_test = true; bad.gl.vw = 32;
-      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0 && (rr.unwired & PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B),
-            "20-dword list B not accepted as extrapolated (unwired 0x%x)", rr.unwired);
+      CHECK(prismrv_vk_ctx_frame(&c, &bad, &rr, &why) == 0 && !(rr.unwired & PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B),
+            "20-dword list B refused or flagged (unwired 0x%x)", rr.unwired);
       f.submit_ret = -EIO;
       CHECK(prismrv_vk_ctx_frame(&c, &in, &rr, &why) == -EIO, "submit failure not propagated");
       f.submit_ret = 0;

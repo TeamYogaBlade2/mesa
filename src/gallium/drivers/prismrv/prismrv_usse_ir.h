@@ -34,6 +34,7 @@ enum prismrv_usse_bank {
 #define PRISMRV_USSE_FLAG_SYNCS    (1u << 1)
 #define PRISMRV_USSE_FLAG_SKIPINV  (1u << 2)
 #define PRISMRV_USSE_FLAG_END      (1u << 3)   /* vmov only (verified); ends the program */
+#define PRISMRV_USSE_FLAG_ONCEONLY (1u << 4)   /* vpck: word bit 53 (as for bitwise; the vendor's internal vertex programs set it) */
 
 enum prismrv_usse_pred {
    PRISMRV_USSE_PRED_NONE,
@@ -172,7 +173,10 @@ struct prismrv_usse_test {
  * move used for register copies and constant/uniform forwarding.
  */
 enum prismrv_usse_mov_type { PRISMRV_USSE_MOV_I8, PRISMRV_USSE_MOV_I16,
-                             PRISMRV_USSE_MOV_I32 };
+                             PRISMRV_USSE_MOV_I32,
+                             PRISMRV_USSE_MOV_I10,     /* type field 3, oracle gpu_emu/isa.py _decode_vmov */
+                             PRISMRV_USSE_MOV_FLT16,   /* 4 */
+                             PRISMRV_USSE_MOV_FLT };   /* 5: 32-bit float move */
 
 struct prismrv_usse_vmov {
    uint8_t type;             /* enum prismrv_usse_mov_type */
@@ -258,6 +262,9 @@ enum prismrv_usse_bw_op {
 #define PRISMRV_USSE_BW_END     (1u << 1)
 #define PRISMRV_USSE_BW_SYNCS   (1u << 2)
 #define PRISMRV_USSE_BW_NOSCHED (1u << 3)
+/* emitpds, operands all zero (oracle gpu_emu/isa.py: taske = bit 44, freep = bit 44 clear + bit 51 set; fb275000a0200000 / fb2f4000a0200000) */
+#define PRISMRV_USSE_EMITPDS_TASKE UINT64_C(0xfb275000a0200000)
+#define PRISMRV_USSE_EMITPDS_FREEP UINT64_C(0xfb2f4000a0200000)
 #define PRISMRV_USSE_BW_SKIPINV (1u << 4)
 #define PRISMRV_USSE_BW_ONCEONLY (1u << 5)   /* bit 53; set on the clear/background program's copy (captures, analysis/BACKGROUND_PROGRAMS.md) */
 

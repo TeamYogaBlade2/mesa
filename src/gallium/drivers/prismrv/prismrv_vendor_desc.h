@@ -36,6 +36,13 @@ unsigned prismrv_vk_desc_state_list(uint32_t task, uint32_t block_va, uint32_t c
 /* as above, but also accepts list-B counts 17..20 by the fitted rule ctl = 0x20002 + count*0x40; *extrapolated tells the caller */
 unsigned prismrv_vk_desc_state_list_ex(uint32_t task, uint32_t block_va, uint32_t count, uint32_t *out, bool *extrapolated);
 
+/*
+ * state list B/A descriptor with an explicit ctl word: ctl is the handle (nibble 2) of the list's copy program in the vertex code heap
+ * (prismrv_vendor_vsprog.h); the other words do not depend on the count (all 10 measured (task, count) pairs).  Any count the copy
+ * program can cover is accepted, so the fitted rule above is no longer needed when the driver places the program itself.
+ */
+unsigned prismrv_vk_desc_state_list_h(uint32_t task, uint32_t block_va, uint32_t count, uint32_t ctl, uint32_t *out);
+
 /* scissor object (task 0x05800202, class 7): only the block VA moves */
 unsigned prismrv_vk_desc_scissor(uint32_t block_va, uint32_t *out);
 

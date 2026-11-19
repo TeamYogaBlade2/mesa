@@ -4,6 +4,7 @@
  */
 #include "prismrv_vendor_ctx.h"
 #include "prismrv_vendor_bgprog.h"
+#include "prismrv_vendor_vsprog.h"
 
 #include <errno.h>
 #include <string.h>
@@ -13,6 +14,7 @@ static const struct { uint32_t heap, base, size; } heap_range[] = {
    { PRISMRV_HEAP_DEFAULT,      0x10000000u, 0x30000000u },
    { PRISMRV_HEAP_KERNEL_DATA,  0xf0000000u, 0x02fff000u },
    { PRISMRV_HEAP_PIXEL_USSE,   0xf4000000u, 0x04fff000u },
+   { PRISMRV_HEAP_VERTEX_USSE,  0xfc000000u, 0x01fff000u },
    { PRISMRV_HEAP_PDS_PIXEL,    0xe4000000u, 0x01fff000u },
    { PRISMRV_HEAP_PDS_VERTEX,   0xec000000u, 0x01bff000u },
 };
@@ -20,6 +22,7 @@ static const struct { uint32_t heap, base, size; } heap_range[] = {
 static const struct { uint32_t heap, size; } arena_spec[PRISMRV_VK_ARENA_COUNT] = {
    [PRISMRV_VK_ARENA_CCB]   = { PRISMRV_HEAP_KERNEL_DATA, 0x3000 },   /* 8 entries x 0x540 */
    [PRISMRV_VK_ARENA_CODE]  = { PRISMRV_HEAP_PIXEL_USSE, 0x8000 },
+   [PRISMRV_VK_ARENA_VCODE] = { PRISMRV_HEAP_VERTEX_USSE, 0x8000 },
    [PRISMRV_VK_ARENA_PDS_V] = { PRISMRV_HEAP_PDS_VERTEX, 0x8000 },
    [PRISMRV_VK_ARENA_PDS_P] = { PRISMRV_HEAP_PDS_PIXEL, 0x8000 },
    [PRISMRV_VK_ARENA_DATA]  = { PRISMRV_HEAP_DEFAULT, 0x10000 },
@@ -86,7 +89,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    struct prismrv_vk_stream_params sp;
    uint32_t stream_va, code_va, bind_va, blk_a_va, blk_b_va, sc_va, ac_va, a_va, b_va, scd_va, acd_va, vp_va, e0_va, ep_va, eo_va;
    uint32_t w[PRISMRV_VK_STREAM_MAX_DWORDS];
-   bool extrap_b = false, hw_written;
+   bool extrap_b = false, hw_written, vs_wired = false;
    uint32_t entry[PRISMRV_VK_ENTRY_BYTES / 4], bos[8 + 32];
    uint8_t *p;
    unsigned n, slot, nb = 0;
@@ -181,44 +184,94 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       const uint32_t task_a = gl.stencil ? 0x1a022204 : 0x1a022203;
       const uint32_t task_b = full ? 0x1a022205 : 0x1a022207;   /* must equal the task word the stream builder emits */
 
-      len = prismrv_vk_desc_state_list(task_a, blk_a_va, k.n_a, o);
-      if (!len) FAIL(-ENOTSUP, "state list A: dword count not measured");
+      /* the vertex heap's programs: END, clear VS, epilogue copy, one copy program per state list; every ctl word is their handle */
+      uint32_t h_end, h_clear, h_pair, h_la, h_lb, h_vs = in->vprog_ctl;
+      {
+         uint64_t qe[PRISMRV_VK_VS_END_QWORDS], qc[PRISMRV_VK_VS_CLEAR_QWORDS], qp[PRISMRV_VK_VS_EPI_PAIR_QWORDS];
+         uint64_t qa[PRISMRV_VK_VS_COPY_MAX_QWORDS], qb[PRISMRV_VK_VS_COPY_MAX_QWORDS];
+         unsigned qn_a = prismrv_vk_vs_copy_program(k.n_a + 1, qa), qn_b = prismrv_vk_vs_copy_program(k.n_b + 1, qb);
+         uint32_t va;
+         uint8_t *q;
+
+         if (!qn_a || !qn_b)
+            FAIL(-ENOTSUP, "state list dword count beyond what the copy programs cover (32 dwords)");
+         prismrv_vk_vs_end(qe);
+         if (!prismrv_vk_vs_clear(qc) || !prismrv_vk_vs_epi_pair(qp))
+            FAIL(-EFAULT, "internal vertex program cannot be encoded");
+
+#define PLACE_V(src, bytes, handle)                                                                         \
+         do {                                                                                               \
+            if (!(q = ALLOC(PRISMRV_VK_ARENA_VCODE, bytes, 8, va)))                                         \
+               FAIL(-ENOSPC, "vertex code arena full");                                                     \
+            memcpy(q, src, bytes);                                                                          \
+            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va, PRISMRV_VK_HANDLE_VERTEX, &(handle)))\
+               FAIL(-EFAULT, "vertex code address cannot be encoded as a handle");                          \
+         } while (0)
+         PLACE_V(qe, sizeof(qe), h_end);
+         PLACE_V(qc, sizeof(qc), h_clear);
+         PLACE_V(qp, sizeof(qp), h_pair);
+         PLACE_V(qa, qn_a * 8, h_la);
+         PLACE_V(qb, qn_b * 8, h_lb);
+         if (in->vs_code) {
+            if (!in->vs_code_size || (in->vs_code_size & 7))
+               FAIL(-EINVAL, "vs_code_size must be a multiple of 8");
+            if (!(q = ALLOC(PRISMRV_VK_ARENA_VCODE, in->vs_code_size, 8, va)))
+               FAIL(-ENOSPC, "vertex code arena full");
+            memcpy(q, in->vs_code, in->vs_code_size);
+            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va, PRISMRV_VK_HANDLE_VERTEX, &h_vs))
+               FAIL(-EFAULT, "vertex code address cannot be encoded as a handle");
+            vs_wired = true;
+         }
+#undef PLACE_V
+      }
+
+      len = prismrv_vk_desc_state_list_h(task_a, blk_a_va, k.n_a, h_la, o);
+      if (!len) FAIL(-ENOTSUP, "state list A: invalid task or empty list");
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, a_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
-      len = prismrv_vk_desc_state_list_ex(task_b, blk_b_va, k.n_b, o, &extrap_b);
-      if (!len) FAIL(-ENOTSUP, "state list B: dword count outside the measured/fitted range");
+      len = prismrv_vk_desc_state_list_h(task_b, blk_b_va, k.n_b, h_lb, o);
+      if (!len) FAIL(-ENOTSUP, "state list B: invalid task or empty list");
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, b_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
       len = prismrv_vk_desc_scissor(sc_va, o);
+      o[4] = h_clear;
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, scd_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
-      len = prismrv_vk_desc_access(ac_va, in->access_var, o);
+      {
+         uint32_t av[5];
+         memcpy(av, in->access_var, sizeof(av));
+         av[1] = h_end;                      /* the access object's ctl (dw4) */
+         len = prismrv_vk_desc_access(ac_va, av, o);
+      }
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, acd_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
       if (in->n_attrs == 2) {
          const uint32_t a0[3] = { in->attr_va, in->attr_dwords_m1, in->attr_stride };
          const uint32_t a1[3] = { in->attr1_va, in->attr1_dwords_m1, in->attr1_stride };
-         len = prismrv_vk_desc_vprog2(a0, a1, in->vprog_ctl, o);
+         len = prismrv_vk_desc_vprog2(a0, a1, h_vs, o);
       } else {
-         len = prismrv_vk_desc_vprog1(in->attr_va, in->attr_dwords_m1, in->attr_stride, in->vprog_ctl, o);
+         len = prismrv_vk_desc_vprog1(in->attr_va, in->attr_dwords_m1, in->attr_stride, h_vs, o);
       }
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, vp_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
       len = prismrv_vk_desc_epilogue_hdrless(in->epi_hdrless_dw3, o);
+      o[0] = h_end;
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, e0_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
       /* the three 0x1a02{4,6,8}201 records share ONE object in every capture */
       len = prismrv_vk_desc_epilogue_pair(in->epi_pair_var, o);
+      o[8] = h_pair;
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, ep_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
 
       len = prismrv_vk_desc_epilogue_out(in->epi_out_var, o);
+      o[8] = h_pair;
       if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, len * 4, 16, eo_va))) FAIL(-ENOSPC, "vertex PDS arena full");
       memcpy(p, o, len * 4);
    }
@@ -308,7 +361,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    res->arena2_va = gl.pds_arena2_va;
    res->stream_va = stream_va;
    res->stream_dwords = n;
-   res->unwired = (hw_written ? 0 : PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS) | PRISMRV_VK_UNWIRED_HWRC |
+   res->unwired = (hw_written ? 0 : PRISMRV_VK_UNWIRED_HW_OBJECT_CONTENTS) | PRISMRV_VK_UNWIRED_HWRC | (vs_wired ? 0 : PRISMRV_VK_UNWIRED_VS_CODE) |
                  (extrap_b ? PRISMRV_VK_UNWIRED_EXTRAPOLATED_LIST_B : 0);
    return 0;
 #undef FAIL

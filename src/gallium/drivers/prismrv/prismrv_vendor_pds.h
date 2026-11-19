@@ -38,6 +38,7 @@ prismrv_vk_shader_descriptor(uint32_t code_va, uint32_t *out)
  * exact on 40 distinct (base, VA, handle) captured tuples.  The hardware adds the same base, so the driver must encode with the base
  * its kernel programs.
  */
+#define PRISMRV_VK_VCODE_HEAP_BASE 0xfc000000u   /* vertex USSE heap (UAPI heap 5); the code base the driver's kernel programs must match */
 #define PRISMRV_VK_HANDLE_PIXEL  7u
 #define PRISMRV_VK_HANDLE_VERTEX 2u
 

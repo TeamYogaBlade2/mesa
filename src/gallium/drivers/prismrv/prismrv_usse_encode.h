@@ -34,6 +34,14 @@ bool prismrv_usse_decode_vmov(uint64_t word, struct prismrv_usse_vmov *out);
 bool prismrv_usse_encode_vpck(const struct prismrv_usse_vpck *in, uint64_t *out);
 bool prismrv_usse_decode_vpck(uint64_t word, struct prismrv_usse_vpck *out);
 
+/*
+ * vpck u8 -> f32 (the reverse of the verified vpck above): dst f32 (type field hi[8:6] = 6), src u8 (hi[11:9] = 0).  The byte of
+ * the packed source that goes to a destination lane is selected by a bit pattern in the low word; all four byte indices were
+ * measured (oracle: the vendor's clear vertex program unpacks one byte per word to o4.x o4.y o6.x o6.y from o3), so the table is
+ * complete for dst_mask X or Y and a source register number 3, and is NOT known to hold for other layouts: they are rejected.
+ * flags: ONCEONLY | SKIPINV | NOSCHED | SYNCS.
+ */
+bool prismrv_usse_encode_vunpck_u8f32(unsigned byte, unsigned dst_reg, unsigned dst_mask, unsigned src_reg, unsigned flags, uint64_t *out);
 bool prismrv_usse_encode_vrcp(const struct prismrv_usse_vrcp *in, uint64_t *out);
 bool prismrv_usse_decode_vrcp(uint64_t word, struct prismrv_usse_vrcp *out);
 

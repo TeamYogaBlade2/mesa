@@ -50,7 +50,7 @@ test('prismrv-usse-vec', prismrv_usse_vec_test, suite: ['prismrv'])
 prismrv_vendor_ctx_test = executable(
   'prismrv_vendor_ctx_test',
   ['prismrv_vendor_ctx_test.c', '../prismrv_vendor_ctx.c', '../prismrv_vendor_desc.c', '../prismrv_vendor_emit.c',
-   '../prismrv_vendor_kick.c', '../prismrv_vendor_stream.c', '../prismrv_vendor_submit.c', '../prismrv_usse_encode.c'],
+   '../prismrv_vendor_kick.c', '../prismrv_vendor_stream.c', '../prismrv_vendor_submit.c', '../prismrv_usse_encode.c', '../prismrv_usse_encode_vec.c'],
   c_args: ['-Wall', '-Wextra'],
   dependencies: [dep_libdrm],
 )
@@ -111,6 +111,13 @@ prismrv_vendor_handles_test = executable(
   c_args: ['-Wall', '-Wextra'],
 )
 test('prismrv-vendor-handles', prismrv_vendor_handles_test, suite: ['prismrv'])
+
+prismrv_vendor_vsprog_test = executable(
+  'prismrv_vendor_vsprog_test',
+  ['prismrv_vendor_vsprog_test.c', '../prismrv_usse_encode.c', '../prismrv_usse_encode_vec.c'],
+  c_args: ['-Wall', '-Wextra'],
+)
+test('prismrv-vendor-vsprog', prismrv_vendor_vsprog_test, suite: ['prismrv'])
 
 prismrv_vendor_entry_test = executable(
   'prismrv_vendor_entry_test',

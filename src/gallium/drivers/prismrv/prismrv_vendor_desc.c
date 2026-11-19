@@ -141,3 +141,18 @@ prismrv_vk_desc_vprog2(const uint32_t attr0[3], const uint32_t attr1[3], uint32_
    memcpy(out + 12, code, sizeof(code));
    return PRISMRV_VK_DESC_VPROG2_DWORDS;
 }
+
+unsigned
+prismrv_vk_desc_state_list_h(uint32_t task, uint32_t block_va, uint32_t count, uint32_t ctl, uint32_t *out)
+{
+   static const uint32_t code[8] = { 0x87000000, 0x90000006, 0x07000103, 0x87040000, 0x90000006, 0x07040103, 0x07080185, 0xaf000000 };
+
+   if (task < 0x1a022203 || task > 0x1a022207 || !count)
+      return 0;
+   memset(out, 0, PRISMRV_VK_DESC_STATE_LIST_DWORDS * 4);
+   out[0] = block_va;
+   out[1] = count;
+   out[8] = ctl;
+   memcpy(out + 12, code, sizeof(code));
+   return PRISMRV_VK_DESC_STATE_LIST_DWORDS;
+}
