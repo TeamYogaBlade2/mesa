@@ -49,6 +49,7 @@
  *   with Gallium input index i and is loaded to registers r[4i..4i+3].
  */
 #include "prismrv_context.h"
+#include "prismrv_vendor_gl_pipe.h"
 
 #include <sys/mman.h>
 
@@ -165,6 +166,9 @@ prismrv_context_flush(struct pipe_context *pctx,
 {
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    int out_fd = -1;
+
+   if (prismrv_vk_gl_pipe_flush(ctx))
+      return;   /* vendor frames only (PRISMRV_VENDOR_GL=1) */
 
    if (ctx->batch.cmd_size) {
       int ret = prismrv_batch_submit(pctx, PRISMRV_CMD_TA,
@@ -514,6 +518,9 @@ prismrv_draw_vbo(struct pipe_context *pctx,
 
    if (ctx->context_lost)
       return;
+
+   if (prismrv_vk_gl_pipe_draw(ctx, info, draws))
+      return;   /* vendor frames only (PRISMRV_VENDOR_GL=1) */
 
    /* none of these are advertised in the caps; refuse loudly rather
     * than render something different from what was asked */
@@ -1337,6 +1344,9 @@ prismrv_clear(struct pipe_context *pctx, unsigned buffers,
    struct prismrv_context *ctx = to_prismrv_context(pctx);
    const struct pipe_framebuffer_state *fb = &ctx->framebuffer;
 
+   if (prismrv_vk_gl_pipe_clear(ctx, buffers, color))
+      return;   /* vendor frames only (PRISMRV_VENDOR_GL=1) */
+
    if (buffers & PIPE_CLEAR_DEPTHSTENCIL)
       debug_printf("prismrv: depth/stencil clear ignored (no Z buffer)\n");
    if (!(buffers & PIPE_CLEAR_COLOR0) || !fb->nr_cbufs ||
@@ -1378,6 +1388,8 @@ prismrv_context_destroy(struct pipe_context *pctx)
 
    if (ctx->blitter)
       util_blitter_destroy(ctx->blitter);
+   if (ctx->vk_gl)
+      prismrv_vk_gl_pipe_destroy(ctx->vk_gl);
    if (ctx->uploader)
       u_upload_destroy(ctx->uploader);
    if (ctx->batch.cmd_map && ctx->batch.cmd_map != MAP_FAILED)
@@ -1483,6 +1495,8 @@ prismrv_context_create(struct pipe_screen *pscreen, void *priv,
       return NULL;
 
    ctx->screen = screen;
+   if (getenv("PRISMRV_VENDOR_GL"))
+      ctx->vk_gl = prismrv_vk_gl_pipe_create(screen->fd);
    ctx->base.screen = pscreen;
    ctx->base.priv = priv;
 

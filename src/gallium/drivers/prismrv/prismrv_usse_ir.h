@@ -263,7 +263,7 @@ enum prismrv_usse_bw_op {
 #define PRISMRV_USSE_BW_SYNCS   (1u << 2)
 #define PRISMRV_USSE_BW_NOSCHED (1u << 3)
 /* emitpds, operands all zero (oracle gpu_emu/isa.py: taske = bit 44, freep = bit 44 clear + bit 51 set; fb275000a0200000 / fb2f4000a0200000) */
-#define PRISMRV_USSE_EMITPDS_TASKE UINT64_C(0xfb275000a0200000)
+#define PRISMRV_USSE_EMITPDS_TASKE UINT64_C(0xfb275000a0200000)   /* the same word as PRISMRV_USSE_EMITVTX_END in prismrv_usse_nir.h */
 #define PRISMRV_USSE_EMITPDS_FREEP UINT64_C(0xfb2f4000a0200000)
 #define PRISMRV_USSE_BW_SKIPINV (1u << 4)
 #define PRISMRV_USSE_BW_ONCEONLY (1u << 5)   /* bit 53; set on the clear/background program's copy (captures, analysis/BACKGROUND_PROGRAMS.md) */

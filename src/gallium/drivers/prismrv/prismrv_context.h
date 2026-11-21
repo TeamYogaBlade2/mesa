@@ -68,6 +68,7 @@ struct prismrv_vertex_element_state {
 };
 
 struct prismrv_usse_binary;
+struct prismrv_vk_gl;
 
 /* bound shader state */
 struct prismrv_shader_state {
@@ -155,6 +156,7 @@ struct prismrv_context {
    /* set to true when a submit fails; draw_vbo returns immediately until
     * the context is destroyed and re-created */
    bool context_lost;
+   struct prismrv_vk_gl *vk_gl;   /* PRISMRV_VENDOR_GL=1: experimental stock-uKernel vendor frames (prismrv_vendor_gl_pipe.c) */
    unsigned resets_seen;     /* screen->device_resets already reported */
 
    /* vertex elements */

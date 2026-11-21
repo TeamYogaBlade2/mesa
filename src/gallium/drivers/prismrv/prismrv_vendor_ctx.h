@@ -85,7 +85,8 @@ struct prismrv_vk_frame_in {
    /* blocks the caller owns the contents of (copied into the PDS arena) */
    const uint32_t *scissor_block; unsigned n_scissor;   /* the clear quad's vertex block; or leave empty and set clear_w/clear_h */
    float clear_w, clear_h; uint32_t clear_colour;      /* generate the block (captured with 128/256 square, colour 0xff000000) */
-   const uint32_t *access_block; unsigned n_access;
+   const uint32_t *access_block; unsigned n_access;   /* or leave empty and set access_auto: dw0 = block VA - 4 (0xec01b0dc for the block at 0xec01b0e0; one other value), the host-side words 0 */
+   bool access_auto;
    /* caller words whose cause is not understood (descriptor-object `var` arguments) */
    uint32_t access_var[5], epi_pair_var[3], epi_out_var[4], epi_hdrless_dw3;
    /* VAs of the HW objects the CCB entry points at (caller allocated and filled) */

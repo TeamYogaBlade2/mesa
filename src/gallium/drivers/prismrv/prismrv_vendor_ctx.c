@@ -173,8 +173,16 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       prismrv_vk_build_clear_quad_vertices(in->clear_w, in->clear_h, in->clear_colour, cq);
       memcpy(p, cq, sizeof(cq));
    }
-   if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, in->n_access ? in->n_access * 4 : 16, 16, ac_va))) FAIL(-ENOSPC, "vertex PDS arena full");
-   if (in->n_access) memcpy(p, in->access_block, in->n_access * 4);
+   if (!(p = ALLOC(PRISMRV_VK_ARENA_PDS_V, in->n_access ? in->n_access * 4 : (in->access_auto ? PRISMRV_VK_ACCESS_BLOCK_DWORDS * 4 : 16), 16, ac_va))) FAIL(-ENOSPC, "vertex PDS arena full");
+   if (in->n_access) {
+      memcpy(p, in->access_block, in->n_access * 4);
+   } else if (in->access_auto) {
+      const uint32_t zero4[4] = { 0 };
+      uint32_t ab[PRISMRV_VK_ACCESS_BLOCK_DWORDS];
+
+      prismrv_vk_build_access_block(ac_va - 4, 0, zero4, ab);
+      memcpy(p, ab, sizeof(ab));
+   }
 
    /* 4. descriptor objects */
    {

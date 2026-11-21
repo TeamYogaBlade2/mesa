@@ -129,6 +129,16 @@ prismrv_vendor_res_test = executable(
 )
 test('prismrv-vendor-res', prismrv_vendor_res_test, suite: ['prismrv'])
 
+prismrv_vendor_gl_test = executable(
+  'prismrv_vendor_gl_test',
+  ['prismrv_vendor_gl_test.c', '../prismrv_vendor_gl.c', '../prismrv_vendor_res.c', '../prismrv_vendor_ctx.c', '../prismrv_vendor_desc.c',
+   '../prismrv_vendor_emit.c', '../prismrv_vendor_kick.c', '../prismrv_vendor_stream.c', '../prismrv_vendor_submit.c',
+   '../prismrv_usse_encode.c', '../prismrv_usse_encode_vec.c'],
+  c_args: ['-Wall', '-Wextra'],
+  dependencies: [dep_libdrm],
+)
+test('prismrv-vendor-gl', prismrv_vendor_gl_test, suite: ['prismrv'])
+
 prismrv_vendor_entry_test = executable(
   'prismrv_vendor_entry_test',
   ['prismrv_vendor_entry_test.c', '../prismrv_vendor_kick.c', '../prismrv_vendor_emit.c'],

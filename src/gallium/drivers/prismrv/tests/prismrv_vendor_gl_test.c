@@ -1,0 +1,118 @@
+/*
+ * Copyright 2026 PrismRV project
+ * SPDX-License-Identifier: MIT
+ *
+ * Host test of the Gallium glue against a FAKE kernel: eligibility (each unsupported feature is refused with its reason), index
+ * generation for a non-indexed draw, clear colour packing, and a full flush that submits once with the scene + resource BOs.
+ * Address plumbing only; nothing here says the hardware accepts the result.
+ */
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "../prismrv_vendor_gl.h"
+
+struct fake_bo { uint32_t handle, va, size; uint8_t *mem; };
+struct fake { struct fake_bo bo[96]; unsigned n; uint32_t next[11]; unsigned submits; struct drm_prismrv_submit_vendor last; uint32_t last_bos[128]; };
+static const uint32_t heap_base[11] = { 0x10000000, 0xd0000000, 0, 0xf0000000, 0xf4000000, 0xfc000000, 0xe4000000, 0xec000000, 0xe0000000, 0, 0xc8000000 };
+
+static uint32_t
+f_create(void *u, uint64_t size, uint32_t heap, uint32_t *va)
+{
+   struct fake *f = u;
+   struct fake_bo *b = &f->bo[f->n];
+
+   if (!f->next[heap]) f->next[heap] = heap_base[heap] + (heap == 3 ? 0x51000 : 0);
+   b->handle = ++f->n; b->va = f->next[heap]; b->size = size; b->mem = calloc(1, size);
+   f->next[heap] += (size + 0xfff) & ~0xfffu;
+   *va = b->va;
+   return b->handle;
+}
+static void *f_map(void *u, uint32_t h, uint64_t s) { (void)s; return ((struct fake *)u)->bo[h - 1].mem; }
+static int
+f_submit(void *u, const struct drm_prismrv_submit_vendor *a)
+{
+   struct fake *f = u;
+   f->submits++; f->last = *a; memcpy(f->last_bos, (const void *)(uintptr_t)a->bos, a->num_bos * 4);
+   return 0;
+}
+
+#define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL: " __VA_ARGS__); fprintf(stderr, "\n"); fails++; } } while (0)
+
+int
+main(void)
+{
+   int fails = 0;
+   struct fake f; memset(&f, 0, sizeof f);
+   const struct prismrv_vk_ops ops = { .user = &f, .bo_create = f_create, .bo_map = f_map, .submit = f_submit };
+   static struct prismrv_vk_gl g;
+   const char *why = "";
+   static const uint64_t vs[2] = { 0xfa44070000000000ull, 0xfb275000a0200000ull }, fs[2] = { 0xfa44070000000000ull, 0x50850009e0000500ull };
+   struct prismrv_vk_gl_draw d;
+
+   CHECK(prismrv_vk_gl_init(&g, &ops, 0, &why) == -EINVAL, "init without HWRC accepted");
+   CHECK(prismrv_vk_gl_init(&g, &ops, 0x00108368, &why) == 0, "init: %s", why);
+
+   memset(&d, 0, sizeof d);
+   d.fb_w = d.fb_h = 64; d.rt_va = 0x10100000; d.rt_handle = 77; d.rt_rgba8 = true; d.triangles = true;
+   d.vp_scale[0] = d.vp_scale[1] = 32.0f;
+   d.vs_code = vs; d.vs_words = 2; d.fs_code = fs; d.fs_words = 2;
+   d.n_attrs = 1; d.attr[0].va = 0x10197000; d.attr[0].handle = 78; d.attr[0].ncomp = 3; d.attr[0].stride = 12; d.attr[0].is_float = true;
+   d.count = 3;
+
+   /* each unsupported feature is refused with a reason and counted */
+   {
+      struct prismrv_vk_gl_draw x;
+#define REFUSE(field, val, text) do { x = d; x.field = val; \
+         CHECK(prismrv_vk_gl_record_draw(&g, &x, &why) == -ENOTSUP && strstr(why, text), "'%s' not refused (%s)", text, why); } while (0)
+      REFUSE(has_zs, true, "depth");
+      REFUSE(blend, true, "blending");
+      REFUSE(textures, true, "textures");
+      REFUSE(fs_uniforms, true, "uniforms");
+      REFUSE(triangles, false, "triangle");
+      REFUSE(rt_rgba8, false, "RGBA8");
+      REFUSE(n_attrs, 3, "attributes");
+      REFUSE(attr[0].is_float, false, "floats");
+      REFUSE(vs_code, NULL, "native");
+      REFUSE(count, 2, "empty");
+      CHECK(g.dropped == 10, "dropped %u", g.dropped);
+   }
+
+   /* a clear then a non-indexed draw: one submit, scene BOs + the three resources */
+   prismrv_vk_gl_record_clear(&g, 1.0f, 0.5f, 0.0f, 1.0f);
+   CHECK(g.clear_colour == 0xff0080ffu, "clear colour 0x%08x", g.clear_colour);
+   CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == 0, "draw refused: %s", why);
+   CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == -ENOTSUP && strstr(why, "more than one"), "second draw not refused");
+   CHECK(prismrv_vk_gl_flush(&g, &why) == 0, "flush: %s", why);
+   CHECK(f.submits == 1, "submits %u", f.submits);
+   {
+      unsigned i, k, h77 = 0, h78 = 0;
+      for (k = 0; k < f.last.num_bos; k++) { h77 |= f.last_bos[k] == 77; h78 |= f.last_bos[k] == 78; }
+      CHECK(h77 && h78, "resource BOs missing from the submit");
+      for (i = 0; i < SCENE_BO_COUNT; i++) {
+         unsigned found = 0;
+         for (k = 0; k < f.last.num_bos; k++) found |= f.last_bos[k] == g.scene.handles[i];
+         CHECK(found, "scene BO %u missing", i);
+      }
+   }
+   /* generated indices 0,1,2 live in the data arena */
+   {
+      const uint16_t *ix = (const uint16_t *)(g.vk.arena[PRISMRV_VK_ARENA_DATA].map + 0);
+      unsigned found = 0, i;
+      for (i = 0; i + 2 < g.vk.arena[PRISMRV_VK_ARENA_DATA].used / 2; i++) found |= ix[i] == 0 && ix[i + 1] == 1 && ix[i + 2] == 2;
+      CHECK(found, "generated indices 0,1,2 not in the data arena");
+   }
+   /* a flush with nothing recorded submits nothing */
+   CHECK(prismrv_vk_gl_flush(&g, &why) == 0 && f.submits == 1, "empty flush submitted");
+   /* an indexed draw uses the caller's index VA and BO */
+   d.indexed = true; d.index_va = 0x1019d000; d.index_handle = 79;
+   CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == 0 && prismrv_vk_gl_flush(&g, &why) == 0 && f.submits == 2, "indexed frame: %s", why);
+   {
+      unsigned k, h79 = 0;
+      for (k = 0; k < f.last.num_bos; k++) h79 |= f.last_bos[k] == 79;
+      CHECK(h79, "index BO missing from the submit");
+   }
+   printf("gl glue: %d failures\n", fails);
+   return fails ? 1 : 0;
+}
