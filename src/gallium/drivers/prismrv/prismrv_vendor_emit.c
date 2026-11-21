@@ -60,6 +60,12 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    const uint32_t ref_bg2 = (s->pds_bg2_va ? s->pds_bg2_va >> 4 : 0x0e40180c) & 0x0fffffff;
    const uint32_t ref_fs = (s->pds_fs_va ? s->pds_fs_va >> 4 : 0x0e401002) & 0x0fffffff;
    const uint32_t arena2 = s->pds_arena2_va ? s->pds_arena2_va : 0xe4018000;
+   const uint32_t rt_va = s->rt_va ? s->rt_va : 0x10128000, depth_va = s->depth_va ? s->depth_va : 0x10100000;
+   const uint32_t ta8_va = s->ta8_va ? s->ta8_va : 0xd000c000, ta17_va = s->ta17_va ? s->ta17_va : 0xd000a000;
+   const uint32_t ccb3_va = s->ccb3_va ? s->ccb3_va : 0x1001e000;
+   /* list A dw4 / list B word: 0x0801e000 / 0x0803e000 in every capture = 0x08000000 | (ccb3 + 0 / 0x20000) & 0x07ffffff, i.e. two
+    * addresses inside the same zero buffer.  The relation is seen at one ccb3 value only (UNVERIFIED for others). */
+   const uint32_t zbuf_a = 0x08000000u | (ccb3_va & 0x07ffffffu), zbuf_b = 0x08000000u | ((ccb3_va + 0x20000u) & 0x07ffffffu);
 
    memset(out, 0, sizeof(*out));
 
@@ -67,7 +73,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    out->ccb[0x00 / 4] = 0x540;
    out->ccb[0x04 / 4] = 0x71;
    out->ccb[0x08 / 4] = ref_bg;
-   out->ccb[0x0c / 4] = 0x1001e000;
+   out->ccb[0x0c / 4] = ccb3_va;
    out->ccb[0x10 / 4] = 0x16401808;
    out->ccb[0x14 / 4] = 0x0c000000;
    out->ccb[0x18 / 4] = 0x0c000000;
@@ -88,13 +94,13 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    out->ta[17] = 0x00000088;
 
    /* 3DREGISTERS: the dwords that never vary (dw25 is allocation-dependent and left to the caller) */
-   out->three_d[0] = 0x10128000;
+   out->three_d[0] = rt_va;
    out->three_d[1] = 0x40700000;
-   out->three_d[2] = s->depth ? 0x10100000 : 0;
+   out->three_d[2] = s->depth ? depth_va : 0;
    out->three_d[3] = 0x00000080;
    out->three_d[4] = 0x000f0000;
    out->three_d[6] = 0x000000e9;
-   out->three_d[8] = 0xd000c000;
+   out->three_d[8] = ta8_va;
    out->three_d[9] = 0x00000400;
    out->three_d[10] = 0x00000010;
    out->three_d[11] = 0x01004004;
@@ -102,7 +108,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    out->three_d[14] = 0x00000001;
    out->three_d[15] = 0x1e3ce508;
    out->three_d[16] = 0x1e3ce508;
-   out->three_d[17] = 0xd000a000;
+   out->three_d[17] = ta17_va;
    out->three_d[18] = (s->depth && s->stencil) ? 0x00171008 : (s->depth ? 0x00151008 : 0);
    out->three_d[23] = 0x3f800000;
    out->three_d[24] = 0x00000300;
@@ -125,12 +131,12 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    /* state list A */
    uint32_t isp2 = isp_second_word(s->depth_write, s->stencil, s->depth);
    if (s->stencil) {
-      const uint32_t a[12] = { 0x0000d4c7, isp2, 0x0000f000, 0x0e0200ff, ref_bg, 0x0801e000, ref_bg2,
+      const uint32_t a[12] = { 0x0000d4c7, isp2, 0x0000f000, 0x0e0200ff, ref_bg, zbuf_a, ref_bg2,
                                0x80000001, 0x00000001, 0x08001800, 0x00010000, 0 };
       memcpy(out->list_a, a, sizeof(a));
       out->n_a = 12;
    } else {
-      const uint32_t a[11] = { 0x0000d4c3, isp2, 0x0000f000, ref_bg, 0x0801e000, ref_bg2,
+      const uint32_t a[11] = { 0x0000d4c3, isp2, 0x0000f000, ref_bg, zbuf_a, ref_bg2,
                                0x80000001, 0x00000001, 0x08001800, 0x00010000, 0 };
       memcpy(out->list_a, a, sizeof(a));
       out->n_a = 11;
@@ -148,7 +154,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    b[n++] = isp1;
    b[n++] = 0x0000f000;
    b[n++] = 0x16401812;
-   b[n++] = 0x0803e000;
+   b[n++] = zbuf_b;
    b[n++] = ref_fs;
    if (!full) {
       b[n++] = 0x80010001;

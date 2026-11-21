@@ -56,6 +56,15 @@ struct prismrv_vk_state {
     *   pds_arena2_va : base of the second heap-6 arena, written raw (not >> 4) into 3DREGISTERS dw30
     */
    uint32_t pds_bg_va, pds_bg2_va, pds_fs_va, pds_arena2_va;
+   /*
+    * Resource addresses the captures show as constants only because the vendor's process lays its memory out the same way every
+    * time (0 = the captured value, so the golden tests still reproduce the captures; analysis/GALLIUM_FRAME_RESOURCES.md):
+    *   rt_va    3DREGISTERS dw0  (0x10128000)  colour render target          depth_va  dw2 (0x10100000) depth/stencil surface
+    *   ta8_va   dw8  (0xd000c000)  heap 1 block, = the render target data's first TA block (rtdata h1a)
+    *   ta17_va  dw17 (0xd000a000)  heap 1 block, = the render target dataset's first TA block (rtdataset h1a)
+    *   ccb3_va  CCB header dw3 (0x1001e000) an address inside a zero default-window buffer of at least 0x80004 bytes
+    */
+   uint32_t rt_va, depth_va, ta8_va, ta17_va, ccb3_va;
 };
 
 struct prismrv_vk_kick {

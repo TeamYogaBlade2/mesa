@@ -38,6 +38,7 @@ struct prismrv_vk_hwobj {
    uint32_t rt_ctl;            /* dw6 and dw25 = sCommand.ui32Data[1], the HW render context address (0x00108368, 0x00109368, 0x0010c368, 0x40805368 in the captures) */
    uint32_t p0;                /* dw0: heap 3 object (0xf0049000) */
    struct prismrv_vk_rtblock blk[2];
+   uint32_t sync_obj2;         /* render details +0xec: the heap 8 object one page below sync_obj in the captures; 0 = sync_obj - 0x1000 */
 };
 
 static inline void
@@ -108,7 +109,7 @@ prismrv_vk_build_rtdataset(const struct prismrv_vk_hwobj *h, uint32_t out[PRISMR
 static inline void
 prismrv_vk_build_render_details_tail(const struct prismrv_vk_hwobj *h, uint32_t *out)
 {
-   out[0xec / 4] = h->sync_obj - 0x1000;
+   out[0xec / 4] = h->sync_obj2 ? h->sync_obj2 : h->sync_obj - 0x1000;
    out[0xf4 / 4] = h->rtdataset_va;
    out[0xf8 / 4] = h->rtdataset_va + PRISMRV_VK_RTDATA_OFFSET;
    out[0x14c / 4] = 0x02000000;
