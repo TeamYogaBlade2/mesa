@@ -44,6 +44,17 @@ prismrv_drm_gem_create_heap(int fd, uint64_t size, uint32_t heap, uint32_t *gpu_
    return c.handle;
 }
 
+/* UAPI v7: SGXRegisterHWRenderContextKM port - zero image, the kernel patches the PD address in at pd_offset; returns the BO handle */
+uint32_t
+prismrv_drm_hwrc_create(int fd, uint32_t size, uint32_t pd_offset, uint32_t *gpu_va)
+{
+   struct drm_prismrv_hwrc_create c = { .data = 0, .size = size, .pd_offset = pd_offset };
+   if (drmIoctl(fd, DRM_IOCTL_PRISMRV_HWRC_CREATE, &c))
+      return 0;
+   *gpu_va = c.gpu_va;
+   return c.handle;
+}
+
 uint32_t
 prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va)
 {

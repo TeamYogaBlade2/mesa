@@ -38,6 +38,9 @@ struct prismrv_vk_ops {
    uint32_t (*bo_create)(void *user, uint64_t size, uint32_t heap, uint32_t *gpu_va);
    void *(*bo_map)(void *user, uint32_t handle, uint64_t size);   /* CPU mapping, NULL on failure */
    int (*submit)(void *user, const struct drm_prismrv_submit_vendor *args);
+   /* optional: have the kernel create the HW render context (vendor SGXRegisterHWRenderContextKM: kernel-data heap, PD address
+    * patched in by the kernel at pd_offset, rest zero); returns the BO handle (0 = failure) and the context's device VA */
+   uint32_t (*hwrc_create)(void *user, uint32_t size, uint32_t pd_offset, uint32_t *gpu_va);
 };
 
 struct prismrv_vk_arena {

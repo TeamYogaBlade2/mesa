@@ -12,6 +12,7 @@ int prismrv_drm_get_param(int fd, uint32_t param, uint64_t *value);
 /* returns the GEM handle (0 on failure) and the BO's fixed GPU VA */
 uint32_t prismrv_drm_gem_create(int fd, uint64_t size, uint32_t *gpu_va);
 /* UAPI v6: place the BO in a vendor heap (PRISMRV_HEAP_*); 0 on failure (older kernels reject heap != 0) */
+uint32_t prismrv_drm_hwrc_create(int fd, uint32_t size, uint32_t pd_offset, uint32_t *gpu_va);
 uint32_t prismrv_drm_gem_create_heap(int fd, uint64_t size, uint32_t heap, uint32_t *gpu_va);
 /* wait until the GPU is done with the BO (any context/process); 0 or -errno */
 int prismrv_drm_gem_wait(int fd, uint32_t handle, uint64_t timeout_ns);

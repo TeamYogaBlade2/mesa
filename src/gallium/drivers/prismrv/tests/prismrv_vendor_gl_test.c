@@ -40,6 +40,15 @@ f_submit(void *u, const struct drm_prismrv_submit_vendor *a)
 
 #define CHECK(cond, ...) do { if (!(cond)) { fprintf(stderr, "FAIL: " __VA_ARGS__); fprintf(stderr, "\n"); fails++; } } while (0)
 
+static struct { uint32_t size, pd_offset; int calls; int fail; } hw;
+static uint32_t
+f_hwrc(void *user, uint32_t size, uint32_t pd_offset, uint32_t *gpu_va)
+{
+   (void)user; hw.size = size; hw.pd_offset = pd_offset; hw.calls++;
+   if (hw.fail) return 0;
+   *gpu_va = 0xf0010000; return 99;
+}
+
 int
 main(void)
 {
@@ -53,6 +62,19 @@ main(void)
 
    CHECK(prismrv_vk_gl_init(&g, &ops, 0, &why) == -EINVAL, "init without HWRC accepted");
    CHECK(prismrv_vk_gl_init(&g, &ops, 0x00108368, &why) == 0, "init: %s", why);
+
+   {  /* kernel-created HWRC (vendor SGXRegisterHWRenderContextKM): size 0x54, PD patched in at +0x08 */
+      struct fake f2; static struct prismrv_vk_gl g2; struct prismrv_vk_ops ops2 = ops;
+      memset(&f2, 0, sizeof f2); ops2.user = &f2; ops2.hwrc_create = f_hwrc;
+      CHECK(prismrv_vk_gl_init(&g2, &ops2, 0, &why) == 0, "init with kernel HWRC: %s", why);
+      CHECK(hw.calls == 1 && hw.size == 0x54 && hw.pd_offset == 0x08, "hwrc_create args %u/%u", hw.size, hw.pd_offset);
+      CHECK(g2.hwrc_va == 0xf0010000 && g2.hwrc_handle == 99, "hwrc va/handle");
+      ops2.user = &f2; hw.fail = 1;
+      CHECK(prismrv_vk_gl_init(&g2, &ops2, 0, &why) == -EIO, "failing HWRC_CREATE accepted");
+      hw.fail = 0;
+      CHECK(prismrv_vk_gl_init(&g2, &ops2, 0x00108368, &why) == 0 && g2.hwrc_handle == 0, "explicit HWRC init: %s", why);
+      CHECK(hw.calls == 2, "explicit HWRC must not call the kernel (calls=%d)", hw.calls);
+   }
 
    memset(&d, 0, sizeof d);
    d.fb_w = d.fb_h = 64; d.rt_va = 0x10100000; d.rt_handle = 77; d.rt_rgba8 = true; d.triangles = true;

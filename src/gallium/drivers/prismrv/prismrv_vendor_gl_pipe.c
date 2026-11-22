@@ -37,6 +37,12 @@ op_bo_map(void *user, uint32_t handle, uint64_t size)
    return m == (void *)-1 ? NULL : m;
 }
 
+static uint32_t
+op_hwrc_create(void *user, uint32_t size, uint32_t pd_offset, uint32_t *gpu_va)
+{
+   return prismrv_drm_hwrc_create((int)(intptr_t)user, size, pd_offset, gpu_va);
+}
+
 static int
 op_submit(void *user, const struct drm_prismrv_submit_vendor *a)
 {
@@ -50,12 +56,13 @@ prismrv_vk_gl_pipe_create(int fd)
 {
    const char *e = getenv("PRISMRV_VENDOR_HWRC"), *why = "";
    struct prismrv_vk_gl *g;
-   struct prismrv_vk_ops ops = { .user = (void *)(intptr_t)fd, .bo_create = op_bo_create, .bo_map = op_bo_map, .submit = op_submit };
+   struct prismrv_vk_ops ops = { .user = (void *)(intptr_t)fd, .bo_create = op_bo_create, .bo_map = op_bo_map, .submit = op_submit, .hwrc_create = op_hwrc_create };
    int r;
 
    g = calloc(1, sizeof(*g));
    if (!g)
       return NULL;
+   /* PRISMRV_VENDOR_HWRC=<hex> overrides (a context the caller built); otherwise the kernel creates it like the vendor KM */
    r = prismrv_vk_gl_init(g, &ops, e ? (uint32_t)strtoul(e, NULL, 16) : 0, &why);
    if (r) {
       fprintf(stderr, "prismrv: vendor GL path not available: %s (%d)\n", why, r);

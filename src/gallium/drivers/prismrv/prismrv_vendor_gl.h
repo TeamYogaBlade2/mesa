@@ -19,6 +19,10 @@
 #include "prismrv_vendor_ctx.h"
 #include "prismrv_vendor_res.h"
 
+/* the HW render context: ui32Sizeof_HWRENDERCONTEXT and ui32OffsetToPDDevPAddr (analysis/agents/r0-owner.md) */
+#define PRISMRV_VK_HWRC_SIZE      0x54
+#define PRISMRV_VK_HWRC_PD_OFFSET 0x08
+
 #define PRISMRV_VK_GL_MAX_ATTRS 2
 #define PRISMRV_VK_GL_MAX_EXTRA_BOS 8
 
@@ -41,7 +45,7 @@ struct prismrv_vk_gl {
    struct prismrv_vk_ctx vk;
    struct prismrv_vk_scene scene;
    bool ready;
-   uint32_t hwrc_va;
+   uint32_t hwrc_va, hwrc_handle;   /* handle 0 = the caller-supplied address (PRISMRV_VENDOR_HWRC): no BO to map for it */
    /* recorded frame */
    bool have_draw, have_clear;
    struct prismrv_vk_gl_draw draw;

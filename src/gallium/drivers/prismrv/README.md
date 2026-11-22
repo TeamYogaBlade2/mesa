@@ -20,12 +20,15 @@ The kernel reports its command ABI through `PRISMRV_PARAM_CMD_ABI`:
   0xDEADBEEF immediates itself, `prismrv_ukpatch.c`).  The only way to render is the vendor TA kick
   (`prismrv_vendor_*.c` -> `DRM_PRISMRV_SUBMIT_VENDOR`).  The driver emits **no** STREAM_V1 text/native stream and does not even
   build the V1 text program for shaders; shaders are compiled to native USSE words only.  The vendor frame needs the HW render
-  context address in `PRISMRV_VENDOR_HWRC=<hex>` (its contents were never captured, so the driver cannot create it); without it
-  draws are dropped with a message - they are never sent as STREAM_V1, which the stock uKernel would misread.
+  context is created by the kernel (UAPI v7 `DRM_PRISMRV_HWRC_CREATE`, the port of the vendor `SGXRegisterHWRenderContextKM`:
+  0x54 bytes in the kernel-data heap, the kernel patches the PD address in at +0x08).  The image is zero-filled: what the
+  uKernel is known to read on the kick path needs nothing else (analysis/agents/r0-owner.md).  `PRISMRV_VENDOR_HWRC=<hex>`
+  still overrides it with an address the caller built.  Without a vendor context draws are dropped with a message - they are
+  never sent as STREAM_V1, which the stock uKernel would misread.
 * `PRISMRV_CMD_ABI_STREAM_V1` (1): only for a custom uKernel / the PrismRV emulator / drm-shim tests (kernel module
   `legacy_stream=1`).  This is the old documented stream at the top of `prismrv_context.c`.
 
-Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): HWRC contents, FS binding `dw3`
+Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`
 (placeholder 0x2fc0000f), the "two attributes => varying" heuristic, unmeasured heap-1/10 contents, HWPBDESC fixed
 0x80217800/0x80200000, user-pointer vertex arrays, and the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.
 

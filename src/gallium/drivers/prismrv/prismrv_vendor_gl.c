@@ -22,11 +22,16 @@ prismrv_vk_gl_init(struct prismrv_vk_gl *g, const struct prismrv_vk_ops *ops, ui
    int r;
 
    memset(g, 0, sizeof(*g));
-   if (!hwrc_va) { *why = "no HW render context address (PRISMRV_VENDOR_HWRC): its contents were never captured, so the driver cannot create it"; return -EINVAL; }
+   if (!hwrc_va && !ops->hwrc_create) { *why = "no HW render context address (PRISMRV_VENDOR_HWRC) and the kernel cannot create one (no HWRC_CREATE ioctl)"; return -EINVAL; }
    r = prismrv_vk_ctx_init(&g->vk, ops, why);
    if (r) return r;
    r = prismrv_vk_scene_create(&g->vk, &g->scene, why);
    if (r) return r;
+   if (!hwrc_va) {
+      /* vendor: the KM allocates the 0x54-byte context and patches the PD address into the user image at +0x08 */
+      g->hwrc_handle = ops->hwrc_create(ops->user, PRISMRV_VK_HWRC_SIZE, PRISMRV_VK_HWRC_PD_OFFSET, &hwrc_va);
+      if (!g->hwrc_handle) { *why = "DRM_PRISMRV_HWRC_CREATE failed (needs CAP_SYS_RAWIO and the kernel's vendor_abi)"; return -EIO; }
+   }
    g->hwrc_va = hwrc_va;
    g->ready = true;
    return 0;
@@ -135,6 +140,7 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
 
       for (i = 0; i < SCENE_BO_COUNT; i++) bos[n++] = g->scene.handles[i];
       bos[n++] = d->rt_handle;
+      if (g->hwrc_handle) bos[n++] = g->hwrc_handle;
       for (i = 0; i < d->n_attrs && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS; i++) bos[n++] = d->attr[i].handle;
       if (d->indexed && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS) bos[n++] = d->index_handle;
       memcpy(g->extra, bos + SCENE_BO_COUNT, (n - SCENE_BO_COUNT) * 4);
