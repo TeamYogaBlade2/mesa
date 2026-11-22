@@ -245,7 +245,8 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    }
    if (prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CMD_ABI,
                              &screen->cmd_abi) ||
-       screen->cmd_abi != PRISMRV_CMD_ABI_STREAM_V1) {
+       (screen->cmd_abi != PRISMRV_CMD_ABI_VENDOR_TA &&
+        screen->cmd_abi != PRISMRV_CMD_ABI_STREAM_V1)) {
       fprintf(stderr, "prismrv: unsupported kernel command ABI\n");
       close(screen->fd);
       ralloc_free(screen);
@@ -253,19 +254,16 @@ prismrv_screen_create(int fd, const struct pipe_screen_config *config,
    }
 
    /*
-    * Vendor path (stock uKernel) probe.  Opt-in only (PRISMRV_VENDOR=1) and REPORT-ONLY for now: the context and frame assembly
-    * exist (prismrv_vendor_ctx.c, host-tested against a fake kernel); the fragment binding is referenced from ISP state list B, but
-    * the contents of the HW objects the CCB entry points at and the per-process background program are not wired (see
-    * prismrv_vendor_ctx.h), so rendering stays on the native path.
+    * The kernel's command ABI decides the render path.  PRISMRV_CMD_ABI_VENDOR_TA (the default, stock vendor uKernel) means the
+    * only way to render is the vendor TA kick (prismrv_vendor_*.c): the legacy STREAM_V1 text/native stream is not emitted at
+    * all.  STREAM_V1 is kept for a custom uKernel / the emulator / drm-shim tests (kernel module legacy_stream=1).
     */
-   if (getenv("PRISMRV_VENDOR")) {
-      uint64_t vabi = 0, heaps = 0;
-      int e_vabi = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_VENDOR_ABI, &vabi);
+   if (screen->cmd_abi == PRISMRV_CMD_ABI_VENDOR_TA) {
+      uint64_t heaps = 0;
       int e_heaps = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_HEAPS, &heaps);
 
-      fprintf(stderr, "prismrv: PRISMRV_VENDOR set: kernel vendor ABI %s, placed heaps 0x%" PRIx64 "%s; "
-              "vendor kick path not enabled for rendering (HW object contents / background program unwired), using the native path\n",
-              (!e_vabi && vabi) ? "enabled" : "off", e_heaps ? 0 : heaps, e_heaps ? " (unavailable)" : "");
+      fprintf(stderr, "prismrv: stock-uKernel vendor kick path (kernel command ABI %d), placed heaps 0x%" PRIx64 "%s\n",
+              PRISMRV_CMD_ABI_VENDOR_TA, e_heaps ? 0 : heaps, e_heaps ? " (unavailable)" : "");
    }
 
    int e_id = prismrv_drm_get_param(screen->fd, PRISMRV_PARAM_CORE_ID,

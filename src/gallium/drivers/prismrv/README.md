@@ -12,21 +12,22 @@ via `PRISMRV_PARAM_CORE_ID` / `PRISMRV_PARAM_CORE_REVISION`; the screen
 selects a table row at create time,
 so adding another variant is one table entry.
 
-## Command stream ABI: read this first
+## Command ABI: read this first
 
-The driver emits the **PrismRV command stream** (`PRISMRV_CMD_ABI_STREAM_V1`,
-documented at the top of `prismrv_context.c`), executed by the PrismRV
-emulator / a custom uKernel.  The Linux driver does not interpret it.
+The kernel reports its command ABI through `PRISMRV_PARAM_CMD_ABI`:
 
-Status of the stock (vendor-extracted) uKernel: the Linux driver now boots it
-unmodified from a firmware container produced by running the vendor loader
-(prismrv repo, `analysis/UKERNEL_IMMEDIATES.md` sections 5-8).  What is still
-missing for real rendering is the **vendor TA kick payload** (the UMD-built
-`ui32Data[6]`, CMDTA, TA/3D state, PDS programs and HWRTData), which is only
-defined inside the closed vendor UMD.  Capturing real kicks with the emulator
-(`PVR_KICK_DUMP=1`) is the next step; until then STREAM_V1 stays emulator-only
-and this driver cannot render on unmodified SGX firmware.  The screen still
-refuses to start unless the kernel reports the expected UAPI/command ABI.
+* `PRISMRV_CMD_ABI_VENDOR_TA` (2, **the default**): the kernel boots the **unmodified vendor uKernel** (it patches the
+  0xDEADBEEF immediates itself, `prismrv_ukpatch.c`).  The only way to render is the vendor TA kick
+  (`prismrv_vendor_*.c` -> `DRM_PRISMRV_SUBMIT_VENDOR`).  The driver emits **no** STREAM_V1 text/native stream and does not even
+  build the V1 text program for shaders; shaders are compiled to native USSE words only.  The vendor frame needs the HW render
+  context address in `PRISMRV_VENDOR_HWRC=<hex>` (its contents were never captured, so the driver cannot create it); without it
+  draws are dropped with a message - they are never sent as STREAM_V1, which the stock uKernel would misread.
+* `PRISMRV_CMD_ABI_STREAM_V1` (1): only for a custom uKernel / the PrismRV emulator / drm-shim tests (kernel module
+  `legacy_stream=1`).  This is the old documented stream at the top of `prismrv_context.c`.
+
+Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): HWRC contents, FS binding `dw3`
+(placeholder 0x2fc0000f), the "two attributes => varying" heuristic, unmeasured heap-1/10 contents, HWPBDESC fixed
+0x80217800/0x80200000, user-pointer vertex arrays, and the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.
 
 ## Security contract (render node)
 

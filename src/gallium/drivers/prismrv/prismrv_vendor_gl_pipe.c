@@ -109,7 +109,7 @@ prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info
    unsigned i;
 
    if (!g)
-      return false;
+      return ctx->vendor_only;   /* vendor ABI without a usable vendor context (e.g. no HWRC): swallow, never emit STREAM_V1 */
    memset(&d, 0, sizeof(d));
    if (fb->nr_cbufs < 1 || !fb->cbufs[0].texture) { fprintf(stderr, "prismrv: vendor GL: draw dropped: no colour buffer\n"); return true; }
    d.fb_w = fb->width;
@@ -156,7 +156,7 @@ prismrv_vk_gl_pipe_clear(struct prismrv_context *ctx, unsigned buffers, const un
    struct prismrv_vk_gl *g = ctx->vk_gl;
 
    if (!g)
-      return false;
+      return ctx->vendor_only;   /* vendor ABI without a usable vendor context (e.g. no HWRC): swallow, never emit STREAM_V1 */
    if ((buffers & PIPE_CLEAR_COLOR) && color)
       prismrv_vk_gl_record_clear(g, color->f[0], color->f[1], color->f[2], color->f[3]);
    if (buffers & PIPE_CLEAR_DEPTHSTENCIL)
@@ -172,7 +172,7 @@ prismrv_vk_gl_pipe_flush(struct prismrv_context *ctx)
    int r;
 
    if (!g)
-      return false;
+      return ctx->vendor_only;   /* vendor ABI without a usable vendor context (e.g. no HWRC): swallow, never emit STREAM_V1 */
    r = prismrv_vk_gl_flush(g, &why);
    if (r)
       fprintf(stderr, "prismrv: vendor GL: frame failed: %s (%d)\n", why, r);

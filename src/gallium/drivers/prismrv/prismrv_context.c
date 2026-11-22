@@ -979,9 +979,10 @@ prismrv_set_sampler_views(struct pipe_context *pctx,
 /* ---- shaders --------------------------------------------------------- */
 
 static struct prismrv_shader_state *
-prismrv_create_shader_state(const struct pipe_shader_state *tmpl)
+prismrv_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_state *tmpl)
 {
    struct prismrv_shader_state *state = CALLOC_STRUCT(prismrv_shader_state);
+   struct prismrv_screen *screen = to_prismrv_screen(pctx->screen);
    nir_shader *nir;
 
    if (!state)
@@ -993,9 +994,12 @@ prismrv_create_shader_state(const struct pipe_shader_state *tmpl)
    }
    /* the driver owns the NIR passed to create_*_state */
    nir = tmpl->ir.nir;
-   state->usse_text = prismrv_nir_to_usse(NULL, nir);
-   if (state->usse_text)
-      state->usse_len = strlen(state->usse_text);
+   /* the V1 text program only exists for a custom uKernel/emulator; the stock-uKernel path needs the native USSE words only */
+   if (screen && screen->cmd_abi != PRISMRV_CMD_ABI_VENDOR_TA) {
+      state->usse_text = prismrv_nir_to_usse(NULL, nir);
+      if (state->usse_text)
+         state->usse_len = strlen(state->usse_text);
+   }
 
    /* native USSE: best effort, independent of the V1 text path */
    state->native = CALLOC_STRUCT(prismrv_usse_binary);
@@ -1039,7 +1043,7 @@ static void *
 prismrv_create_vs_state(struct pipe_context *pctx,
                         const struct pipe_shader_state *tmpl)
 {
-   return prismrv_create_shader_state(tmpl);
+   return prismrv_create_shader_state(pctx, tmpl);
 }
 
 static void
@@ -1055,7 +1059,7 @@ static void *
 prismrv_create_fs_state(struct pipe_context *pctx,
                         const struct pipe_shader_state *tmpl)
 {
-   return prismrv_create_shader_state(tmpl);
+   return prismrv_create_shader_state(pctx, tmpl);
 }
 
 static void
@@ -1495,7 +1499,8 @@ prismrv_context_create(struct pipe_screen *pscreen, void *priv,
       return NULL;
 
    ctx->screen = screen;
-   if (getenv("PRISMRV_VENDOR_GL"))
+   ctx->vendor_only = screen->cmd_abi == PRISMRV_CMD_ABI_VENDOR_TA;
+   if (ctx->vendor_only || getenv("PRISMRV_VENDOR_GL"))
       ctx->vk_gl = prismrv_vk_gl_pipe_create(screen->fd);
    ctx->base.screen = pscreen;
    ctx->base.priv = priv;
