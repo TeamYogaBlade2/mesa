@@ -98,7 +98,14 @@ main(void)
       REFUSE(attr[0].is_float, false, "floats");
       REFUSE(vs_code, NULL, "native");
       REFUSE(count, 2, "empty");
-      CHECK(g.dropped == 10, "dropped %u", g.dropped);
+      x = d; x.vs_varyings = x.fs_varyings = 1;       /* a varying with a single attribute: unmeasured */
+      CHECK(prismrv_vk_gl_record_draw(&g, &x, &why) == -ENOTSUP && strstr(why, "measured"), "1 varying/1 attr not refused (%s)", why);
+      REFUSE(fs_varyings, 1, "differ");               /* VS writes none, FS reads one */
+      x = d; x.n_attrs = 2; x.attr[1] = x.attr[0]; x.vs_varyings = x.fs_varyings = 2;
+      CHECK(prismrv_vk_gl_record_draw(&g, &x, &why) == -ENOTSUP && strstr(why, "more than one varying"), "2 varyings not refused (%s)", why);
+      x = d; x.n_attrs = 2; x.attr[1] = x.attr[0];    /* two attributes but no varying: unmeasured */
+      CHECK(prismrv_vk_gl_record_draw(&g, &x, &why) == -ENOTSUP && strstr(why, "measured"), "2 attrs/0 varyings not refused (%s)", why);
+      CHECK(g.dropped == 14, "dropped %u", g.dropped);
    }
 
    /* a clear then a non-indexed draw: one submit, scene BOs + the three resources */
@@ -135,6 +142,16 @@ main(void)
       for (k = 0; k < f.last.num_bos; k++) h79 |= f.last_bos[k] == 79;
       CHECK(h79, "index BO missing from the submit");
    }
+   {  /* the measured 'one colour varying + two attributes' shape is accepted, on its own context */
+      struct fake f3; static struct prismrv_vk_gl g3; struct prismrv_vk_ops ops3 = ops; struct prismrv_vk_gl_draw x = d;
+      memset(&f3, 0, sizeof f3); ops3.user = &f3;
+      CHECK(prismrv_vk_gl_init(&g3, &ops3, 0x00108368, &why) == 0, "init g3: %s", why);
+      x.n_attrs = 2; x.attr[1] = x.attr[0]; x.attr[1].va = 0x10198000; x.attr[1].handle = 79; x.vs_varyings = x.fs_varyings = 1;
+      CHECK(prismrv_vk_gl_record_draw(&g3, &x, &why) == 0, "varying draw refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g3, &why) == 0, "varying flush: %s", why);
+      CHECK(f3.submits == 1, "varying frame submits %u", f3.submits);
+   }
+
    printf("gl glue: %d failures\n", fails);
    return fails ? 1 : 0;
 }

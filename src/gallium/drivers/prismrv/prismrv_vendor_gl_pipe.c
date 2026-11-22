@@ -12,6 +12,8 @@
 #include <xf86drm.h>
 
 #include "util/format/u_format.h"
+#include "compiler/shader_enums.h"
+#include "util/bitscan.h"
 #include "util/u_inlines.h"
 #include "util/u_memory.h"
 
@@ -134,6 +136,16 @@ prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info
    if (ctx->vs && ctx->vs->native) { d.vs_code = ctx->vs->native->code; d.vs_words = ctx->vs->native->num_words; }
    if (ctx->fs && ctx->fs->native) { d.fs_code = ctx->fs->native->code; d.fs_words = ctx->fs->native->num_words; }
 
+   {
+      /* interface slots that are not varyings: position, point size, face, point coord, primitive id, layer, viewport */
+      const uint64_t not_varying = BITFIELD64_BIT(VARYING_SLOT_POS) | BITFIELD64_BIT(VARYING_SLOT_PSIZ) |
+                                   BITFIELD64_BIT(VARYING_SLOT_FACE) | BITFIELD64_BIT(VARYING_SLOT_PNTC) |
+                                   BITFIELD64_BIT(VARYING_SLOT_PRIMITIVE_ID) | BITFIELD64_BIT(VARYING_SLOT_LAYER) |
+                                   BITFIELD64_BIT(VARYING_SLOT_VIEWPORT);
+
+      d.vs_varyings = ctx->vs ? util_bitcount64(ctx->vs->outputs_written & ~not_varying) : 0;
+      d.fs_varyings = ctx->fs ? util_bitcount64(ctx->fs->inputs_read & ~not_varying) : 0;
+   }
    d.n_attrs = ctx->num_vertex_elements;
    for (i = 0; i < d.n_attrs && i < PRISMRV_VK_GL_MAX_ATTRS; i++) {
       const struct prismrv_vertex_element *e = &ctx->vertex_elements[i];

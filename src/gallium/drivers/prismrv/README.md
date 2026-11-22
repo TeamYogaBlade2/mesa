@@ -29,7 +29,7 @@ The kernel reports its command ABI through `PRISMRV_PARAM_CMD_ABI`:
   `legacy_stream=1`).  This is the old documented stream at the top of `prismrv_context.c`.
 
 Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`
-(placeholder 0x2fc0000f), the "two attributes => varying" heuristic, unmeasured heap-1/10 contents, HWPBDESC fixed
+(placeholder 0x2fc0000f), unmeasured heap-1/10 contents, HWPBDESC fixed
 0x80217800/0x80200000, user-pointer vertex arrays, and the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.
 
 ## Security contract (render node)

@@ -81,6 +81,9 @@ struct prismrv_shader_state {
     * understand; the native binary is for the stock-uKernel path (phase B/C)
     * and can be dumped with PRISMRV_NATIVE_USSE_DUMP=1. */
    struct prismrv_usse_binary *native;
+   /* NIR interface of the shader (VS: outputs written, FS: inputs read; gl_varying_slot bits) - the vendor path derives
+    * "does the vertex program write a varying" from these instead of guessing from the attribute count */
+   uint64_t outputs_written, inputs_read;
 };
 
 struct prismrv_sampler_view {

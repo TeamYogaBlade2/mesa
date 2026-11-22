@@ -34,6 +34,7 @@ struct prismrv_vk_gl_draw {
    float vp_scale[2];
    const uint64_t *vs_code; unsigned vs_words;    /* native USSE, vertex stage */
    const uint64_t *fs_code; unsigned fs_words;    /* native USSE, fragment stage */
+   unsigned vs_varyings, fs_varyings;   /* varying slots the VS writes / the FS reads (position, point size, face etc. not counted) */
    unsigned n_attrs;
    struct { uint32_t va, handle; unsigned ncomp, stride; bool is_float; } attr[PRISMRV_VK_GL_MAX_ATTRS];
    unsigned count, first;           /* vertex / index count and start */

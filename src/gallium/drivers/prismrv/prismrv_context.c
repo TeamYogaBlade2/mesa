@@ -1001,6 +1001,9 @@ prismrv_create_shader_state(struct pipe_context *pctx, const struct pipe_shader_
          state->usse_len = strlen(state->usse_text);
    }
 
+   state->outputs_written = nir->info.outputs_written;
+   state->inputs_read = nir->info.inputs_read;
+
    /* native USSE: best effort, independent of the V1 text path */
    state->native = CALLOC_STRUCT(prismrv_usse_binary);
    if (state->native && !prismrv_nir_to_usse_native(nir, state->native)) {

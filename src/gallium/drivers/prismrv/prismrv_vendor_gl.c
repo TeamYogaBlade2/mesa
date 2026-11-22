@@ -54,6 +54,11 @@ prismrv_vk_gl_record_draw(struct prismrv_vk_gl *g, const struct prismrv_vk_gl_dr
    for (unsigned i = 0; i < d->n_attrs; i++)
       if (!d->attr[i].is_float || d->attr[i].ncomp < 1 || d->attr[i].ncomp > 4 || !d->attr[i].va || !d->attr[i].stride)
          REJECT("vertex attributes must be 1..4 floats in a resource");
+   /* the only measured shapes: no varying + one attribute, or one colour varying + two attributes (analysis/VS_FS_BINDING_SPLIT.md).
+    * "does the VS write a varying" is derived from the shader interface; any shape that does not fit is refused, not approximated. */
+   if (d->vs_varyings != d->fs_varyings) REJECT("the VS varying outputs and the FS varying inputs differ (unmeasured)");
+   if (d->vs_varyings > 1) REJECT("more than one varying is not measured");
+   if ((d->vs_varyings == 1) != (d->n_attrs == 2)) REJECT("only 'one varying + two attributes' or 'no varying + one attribute' are measured");
    if (d->count < 3) REJECT("empty draw");
    if (d->indexed && !d->index_va) REJECT("index buffer must be a resource");
    if (d->count > 0xffff) REJECT("more than 65535 vertices/indices");
@@ -98,8 +103,10 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
    in.code_size = d->fs_words * 8;
    in.vs_code = d->vs_code;
    in.vs_code_size = d->vs_words * 8;
-   /* UNVERIFIED heuristics: the FS record's colour-varying form follows "two attributes"; its dw3 is the value of the kv10 captures */
-   in.varying = d->n_attrs == 2;
+   /* varying: derived from the shader interface (record_draw only lets through the measured shapes).  UNVERIFIED: the FS record's
+    * colour-varying form is the observed correlate of "the VS writes a varying" (it was never seen with a texture-coordinate varying);
+    * its dw3 is the placeholder value of the kv10 captures */
+   in.varying = d->vs_varyings == 1;
    in.colour_varying = in.varying;
    in.fs_bind_dw3 = 0x2fc0000f;
 
