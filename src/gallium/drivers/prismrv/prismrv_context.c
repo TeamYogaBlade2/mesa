@@ -1395,6 +1395,7 @@ prismrv_context_destroy(struct pipe_context *pctx)
 
    if (ctx->blitter)
       util_blitter_destroy(ctx->blitter);
+   prismrv_vk_gl_pipe_release_holds(ctx, 0);
    if (ctx->vk_gl)
       prismrv_vk_gl_pipe_destroy(ctx->vk_gl);
    if (ctx->uploader)

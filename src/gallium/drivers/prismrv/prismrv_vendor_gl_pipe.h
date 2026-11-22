@@ -23,6 +23,7 @@ void prismrv_vk_gl_pipe_destroy(struct prismrv_vk_gl *g);
 bool prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info *info,
                              const struct pipe_draw_start_count_bias *draw);
 bool prismrv_vk_gl_pipe_clear(struct prismrv_context *ctx, unsigned buffers, const union pipe_color_union *color);
+void prismrv_vk_gl_pipe_release_holds(struct prismrv_context *ctx, unsigned keep);
 bool prismrv_vk_gl_pipe_flush(struct prismrv_context *ctx);
 
 #endif

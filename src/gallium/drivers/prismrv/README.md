@@ -28,9 +28,12 @@ The kernel reports its command ABI through `PRISMRV_PARAM_CMD_ABI`:
 * `PRISMRV_CMD_ABI_STREAM_V1` (1): only for a custom uKernel / the PrismRV emulator / drm-shim tests (kernel module
   `legacy_stream=1`).  This is the old documented stream at the top of `prismrv_context.c`.
 
+User-pointer vertex arrays and user/u8/u32 index data are copied into temporary BOs in the general heap (held until the frame is
+submitted); `index_bias != 0` and indices above 65535 are refused.  This upload path has not been run.
+
 Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`
 (placeholder 0x2fc0000f), unmeasured heap-1/10 contents, HWPBDESC fixed
-0x80217800/0x80200000, user-pointer vertex arrays, and the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.
+0x80217800/0x80200000, the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.
 
 ## Security contract (render node)
 

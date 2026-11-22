@@ -19,6 +19,7 @@
 
 #include "prismrv_context.h"
 #include "prismrv_device.h"
+#include "prismrv_resource.h"
 #include "prismrv_drmif.h"
 #include "prismrv_usse_nir.h"
 #include "prismrv_vendor_gl.h"
@@ -107,6 +108,52 @@ resource_va(struct pipe_resource *pres, unsigned offset, uint32_t *va, uint32_t 
    return true;
 }
 
+/* ---- user-pointer data: copy into a temporary BO in the default (general) heap, like the vendor UMD's own vertex data ---- */
+
+#define MAX_UPLOAD (16u << 20)
+
+void
+prismrv_vk_gl_pipe_release_holds(struct prismrv_context *ctx, unsigned keep)
+{
+   while (ctx->n_vendor_hold > keep)
+      pipe_resource_reference(&ctx->vendor_hold[--ctx->n_vendor_hold], NULL);
+}
+
+static bool
+upload_user(struct prismrv_context *ctx, const void *src, size_t size, uint32_t *va, uint32_t *handle)
+{
+   struct pipe_screen *ps = ctx->base.screen;
+   struct pipe_resource t;
+   struct pipe_resource *r;
+   void *p;
+
+   if (!src || !size || size > MAX_UPLOAD || ctx->n_vendor_hold >= ARRAY_SIZE(ctx->vendor_hold))
+      return false;
+   memset(&t, 0, sizeof(t));
+   t.target = PIPE_BUFFER;
+   t.format = PIPE_FORMAT_R8_UNORM;
+   t.bind = PIPE_BIND_VERTEX_BUFFER | PIPE_BIND_INDEX_BUFFER;
+   t.width0 = size;
+   t.height0 = t.depth0 = t.array_size = 1;
+   r = ps->resource_create(ps, &t);
+   if (!r)
+      return false;
+   p = prismrv_resource_map(r);
+   if (!p || !resource_va(r, 0, va, handle)) {
+      pipe_resource_reference(&r, NULL);
+      return false;
+   }
+   memcpy(p, src, size);
+   ctx->vendor_hold[ctx->n_vendor_hold++] = r;
+   return true;
+}
+
+static uint32_t
+read_index(const void *idx, unsigned size, unsigned i)
+{
+   return size == 4 ? ((const uint32_t *)idx)[i] : size == 2 ? ((const uint16_t *)idx)[i] : ((const uint8_t *)idx)[i];
+}
+
 bool
 prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info *info,
                         const struct pipe_draw_start_count_bias *draw)
@@ -147,25 +194,73 @@ prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info
       d.fs_varyings = ctx->fs ? util_bitcount64(ctx->fs->inputs_read & ~not_varying) : 0;
    }
    d.n_attrs = ctx->num_vertex_elements;
-   for (i = 0; i < d.n_attrs && i < PRISMRV_VK_GL_MAX_ATTRS; i++) {
-      const struct prismrv_vertex_element *e = &ctx->vertex_elements[i];
-      const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[e->vertex_buffer_index];
-
-      d.attr[i].is_float = is_float_format(e->src_format, &d.attr[i].ncomp);
-      d.attr[i].stride = e->src_stride;
-      if (vb->is_user_buffer || !resource_va(vb->buffer.resource, vb->buffer_offset + e->src_offset, &d.attr[i].va, &d.attr[i].handle))
-         d.attr[i].va = 0;   /* user-pointer arrays are not uploaded: refused by the glue */
-   }
    d.first = draw->start;
    d.count = draw->count;
-   if (info->index_size) {
-      d.indexed = true;
-      if (info->index_size != 2 || info->has_user_indices || !resource_va(info->index.resource, draw->start * 2, &d.index_va, &d.index_handle))
-         d.index_va = 0;
-      d.first = 0;
+   {
+      const unsigned holds_before = ctx->n_vendor_hold;
+      const void *indices = NULL;
+      uint32_t max_index = 0;
+      bool ok = true;
+
+      if (d.count > 0xffff) { why = "more than 65535 vertices/indices"; goto refuse; }
+      if (info->index_size) {
+         unsigned isz = info->index_size;
+
+         d.indexed = true;
+         if (draw->index_bias) { why = "index_bias is not wired"; goto refuse; }
+         if (isz != 1 && isz != 2 && isz != 4) { why = "index size"; goto refuse; }
+         indices = info->has_user_indices ? info->index.user :
+                   (info->index.resource ? prismrv_resource_map(info->index.resource) : NULL);
+         if (!indices) { why = "no index data"; goto refuse; }
+         for (i = 0; i < d.count; i++) {
+            uint32_t v = read_index(indices, isz, draw->start + i);
+
+            if (v > 0xffff) { why = "index above 65535 (the vendor index format is u16)"; goto refuse; }
+            max_index = MAX2(max_index, v);
+         }
+         if (isz == 2 && !info->has_user_indices) {
+            if (!resource_va(info->index.resource, draw->start * 2, &d.index_va, &d.index_handle))
+               d.index_va = 0;
+         } else {
+            /* user indices, or u8: copy as u16, starting at the first index of the draw */
+            uint16_t *ix = malloc((size_t)d.count * 2);
+
+            if (!ix) { why = "out of memory"; goto refuse; }
+            for (i = 0; i < d.count; i++)
+               ix[i] = read_index(indices, isz, draw->start + i);
+            ok = upload_user(ctx, ix, (size_t)d.count * 2, &d.index_va, &d.index_handle);
+            free(ix);
+            if (!ok) { why = "index upload failed"; goto refuse; }
+         }
+         d.first = 0;
+      } else {
+         max_index = draw->start + (d.count ? d.count - 1 : 0);
+      }
+
+      for (i = 0; i < d.n_attrs && i < PRISMRV_VK_GL_MAX_ATTRS; i++) {
+         const struct prismrv_vertex_element *e = &ctx->vertex_elements[i];
+         const struct pipe_vertex_buffer *vb = &ctx->vertex_buffers[e->vertex_buffer_index];
+
+         d.attr[i].is_float = is_float_format(e->src_format, &d.attr[i].ncomp);
+         d.attr[i].stride = e->src_stride;
+         if (!vb->is_user_buffer) {
+            if (!resource_va(vb->buffer.resource, vb->buffer_offset + e->src_offset, &d.attr[i].va, &d.attr[i].handle))
+               d.attr[i].va = 0;
+         } else if (d.attr[i].is_float && d.attr[i].stride) {
+            /* user-pointer array: copy elements 0..max_index (the array starts at the element's first byte) */
+            const uint8_t *src = (const uint8_t *)ctx->user_vertex_buffers[e->vertex_buffer_index];
+            size_t bytes = (size_t)max_index * d.attr[i].stride + d.attr[i].ncomp * 4u;
+
+            if (!src || !upload_user(ctx, src + vb->buffer_offset + e->src_offset, bytes, &d.attr[i].va, &d.attr[i].handle))
+               d.attr[i].va = 0;
+         }
+      }
+      if (prismrv_vk_gl_record_draw(g, &d, &why)) {
+refuse:
+         prismrv_vk_gl_pipe_release_holds(ctx, holds_before);   /* nothing was recorded: free this draw's temporaries */
+         fprintf(stderr, "prismrv: vendor GL: draw dropped: %s\n", why);
+      }
    }
-   if (prismrv_vk_gl_record_draw(g, &d, &why))
-      fprintf(stderr, "prismrv: vendor GL: draw dropped: %s\n", why);
    return true;
 }
 
@@ -193,6 +288,7 @@ prismrv_vk_gl_pipe_flush(struct prismrv_context *ctx)
    if (!g)
       return ctx->vendor_only;   /* vendor ABI without a usable vendor context (e.g. no HWRC): swallow, never emit STREAM_V1 */
    r = prismrv_vk_gl_flush(g, &why);
+   prismrv_vk_gl_pipe_release_holds(ctx, 0);   /* the submit holds its own BO references */
    if (r)
       fprintf(stderr, "prismrv: vendor GL: frame failed: %s (%d)\n", why, r);
    return true;

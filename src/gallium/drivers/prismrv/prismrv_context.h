@@ -159,6 +159,8 @@ struct prismrv_context {
    /* set to true when a submit fails; draw_vbo returns immediately until
     * the context is destroyed and re-created */
    bool context_lost;
+   struct pipe_resource *vendor_hold[8];   /* temporary BOs of user-pointer arrays, alive until the frame is submitted */
+   unsigned n_vendor_hold;
    bool vendor_only;              /* kernel ABI is VENDOR_TA: no STREAM_V1 is ever emitted */
    struct prismrv_vk_gl *vk_gl;   /* PRISMRV_VENDOR_GL=1: experimental stock-uKernel vendor frames (prismrv_vendor_gl_pipe.c) */
    unsigned resets_seen;     /* screen->device_resets already reported */
