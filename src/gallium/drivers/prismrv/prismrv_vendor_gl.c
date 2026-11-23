@@ -66,9 +66,15 @@ prismrv_vk_gl_record_draw(struct prismrv_vk_gl *g, const struct prismrv_vk_gl_dr
 #define REJECT(m) do { *why = m; g->dropped++; return -ENOTSUP; } while (0)
    if (!g->ready) REJECT("vendor path not initialised");
    if (g->have_draw) REJECT("more than one draw per frame (the vendor frame shape has exactly one)");
-   if (!d->triangles) REJECT("only triangle lists are supported");
+   if (!d->triangles && !d->lines) REJECT("only triangle and line lists are supported");
    if (!d->rt_rgba8 || !d->rt_va) REJECT("render target must be an RGBA8 resource");
-   if (d->has_zs) REJECT("depth/stencil is not wired (the depth surface address is a caller resource)");
+   if (d->has_zs) REJECT("only a Z16 depth surface is wired (no stencil surface: its address is in no captured kick)");
+   if (d->has_depth && (!d->zs_va || !d->zs_handle)) REJECT("depth surface has no GPU address");
+   if (d->stencil_test) REJECT("stencil test is not wired");
+   if (d->alpha_test) REJECT("alpha test is not wired");
+   if (d->scissor_partial) REJECT("a scissor rectangle that does not cover the target is not wired");
+   if (d->unmapped_state) REJECT("culling with a clockwise front face / a viewport outside the target / a depth range outside [0,1] is not measured");
+   if (d->vw <= 0 || d->vh <= 0) REJECT("empty viewport");
    if (d->blend) REJECT("blending is not wired");
    if (d->textures) REJECT("textures are not wired");
    if (d->vs_uniforms || d->fs_uniforms) REJECT("shader uniforms are not wired (VS constants go into the access block, FS ones into an unmeasured place)");
@@ -114,13 +120,22 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
    in.gl.width = in.gl.height = 0;
    in.gl.width = d->fb_w;
    in.gl.height = d->fb_h;
-   in.gl.vw = (unsigned)(fabsf(d->vp_scale[0]) * 2.0f + 0.5f);
-   in.gl.vh = (unsigned)(fabsf(d->vp_scale[1]) * 2.0f + 0.5f);
-   in.gl.depth_far = 1.0;
-   in.gl.depth_func = PRISMRV_VK_ALWAYS;
-   in.gl.depth_test = -1;
-   in.gl.color_mask[0] = in.gl.color_mask[1] = in.gl.color_mask[2] = in.gl.color_mask[3] = true;
+   in.gl.vx = d->vx;
+   in.gl.vy = d->vy;
+   in.gl.vw = d->vw;
+   in.gl.vh = d->vh;
+   in.gl.depth_near = d->depth_near;
+   in.gl.depth_far = d->depth_far;
+   in.gl.depth = d->has_depth;
+   in.gl.depth_va = d->has_depth ? d->zs_va : 0;
+   in.gl.depth_func = d->has_depth && d->depth_test ? d->depth_func : PRISMRV_VK_ALWAYS;
+   in.gl.depth_write = d->has_depth && d->depth_write;
+   in.gl.depth_test = d->has_depth && d->depth_test ? 1 : (d->has_depth ? 0 : -1);
+   in.gl.cull = d->cull;
+   in.gl.lines = d->lines;
+   for (i = 0; i < 4; i++) in.gl.color_mask[i] = d->color_mask[i];
    in.gl.rt_va = d->rt_va;
+   in.lines = d->lines;
 
    in.code = d->fs_code;
    in.code_size = d->fs_words * 8;
@@ -170,6 +185,7 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
 
       for (i = 0; i < SCENE_BO_COUNT; i++) bos[n++] = g->scene.handles[i];
       bos[n++] = d->rt_handle;
+      if (d->has_depth && d->zs_handle) bos[n++] = d->zs_handle;
       if (g->hwrc_handle) bos[n++] = g->hwrc_handle;
       for (i = 0; i < d->n_attrs && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS; i++) bos[n++] = d->attr[i].handle;
       if (d->indexed && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS) bos[n++] = d->index_handle;

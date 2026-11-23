@@ -31,6 +31,13 @@ The kernel reports its command ABI through `PRISMRV_PARAM_CMD_ABI`:
 User-pointer vertex arrays and user/u8/u32 index data are copied into temporary BOs in the general heap (held until the frame is
 submitted); `index_bias != 0` and indices above 65535 are refused.  This upload path has not been run.
 
+Fixed-function state carried by the vendor frame (the emitter's measured ISP words, `prismrv_vendor_emit.c`): a Z16 depth surface with
+depth test / function / write mask, back/front face culling (default counter-clockwise front face only), colour write mask, a viewport
+rectangle and depth range inside the target, GL_LINES.  Refused with a message instead of being ignored: stencil surfaces and stencil test
+(no captured kick holds a stencil surface address), alpha test, blending, a scissor that does not cover the target, clockwise-front culling,
+viewports outside the target, depth ranges outside [0,1], textures, shader uniforms, more than one draw per frame.  Unverified on hardware:
+the Z16 surface layout and the depth-clear value (the vendor frame's background object decides it).
+
 Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`
 (placeholder 0x2fc0000f), unmeasured heap-1/10 contents, HWPBDESC fixed
 0x80217800/0x80200000, the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.

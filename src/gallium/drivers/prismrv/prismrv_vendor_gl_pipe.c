@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -172,12 +173,57 @@ prismrv_vk_gl_pipe_draw(struct prismrv_context *ctx, const struct pipe_draw_info
    d.fb_h = fb->height;
    d.rt_rgba8 = fb->cbufs[0].format == PIPE_FORMAT_R8G8B8A8_UNORM && fb->cbufs[0].level == 0;
    if (!resource_va(fb->cbufs[0].texture, 0, &d.rt_va, &d.rt_handle)) { fprintf(stderr, "prismrv: vendor GL: draw dropped: colour buffer has no GPU address\n"); return true; }
-   d.has_zs = fb->zsbuf.texture != NULL || ctx->depth.depth_enabled;
+   /* depth: only a Z16 surface is wired (the one measured format, analysis/CMDTA_REGISTER_BLOCKS.md dw18); depth testing without a
+    * depth surface passes in GL, so it is simply off.  Any other surface (stencil, Z24, Z32) is refused by record_draw. */
+   if (fb->zsbuf.texture) {
+      if (fb->zsbuf.format == PIPE_FORMAT_Z16_UNORM && fb->zsbuf.level == 0 &&
+          resource_va(fb->zsbuf.texture, 0, &d.zs_va, &d.zs_handle))
+         d.has_depth = true;
+      else
+         d.has_zs = true;
+   }
+   d.depth_test = d.has_depth && ctx->depth.depth_enabled;
+   d.depth_write = d.depth_test && ctx->depth.depth_writemask;
+   d.depth_func = ctx->depth.depth_func;            /* PIPE_FUNC_* and enum prismrv_vk_func share the 3-bit order */
+   d.stencil_test = ctx->depth.stencil_enabled;
+   d.alpha_test = ctx->depth.alpha_enabled;
    d.blend = ctx->blend.blend_enable;
+   for (i = 0; i < 4; i++) d.color_mask[i] = (ctx->blend.colormask >> i) & 1;   /* PIPE_MASK_R/G/B/A */
+   /* culling: measured with the default (counter-clockwise) front face only */
+   d.cull = ctx->raster.cull_face == PIPE_FACE_NONE ? PRISMRV_VK_CULL_NONE :
+            ctx->raster.cull_face == PIPE_FACE_FRONT ? PRISMRV_VK_CULL_FRONT :
+            ctx->raster.cull_face == PIPE_FACE_BACK ? PRISMRV_VK_CULL_BACK : PRISMRV_VK_CULL_NONE;
+   if (ctx->raster.cull_face == PIPE_FACE_FRONT_AND_BACK || (ctx->raster.cull_face != PIPE_FACE_NONE && !ctx->raster.front_ccw))
+      d.unmapped_state = true;
+   if (ctx->raster.scissor_enable) {
+      const struct pipe_scissor_state *sc = &ctx->scissors[0];
+
+      d.scissor_partial = sc->minx > 0 || sc->miny > 0 || sc->maxx < fb->width || sc->maxy < fb->height;
+   }
+   /* viewport rectangle (GL window coordinates) and depth range from the gallium transform x_w = scale * x_ndc + translate */
+   if (ctx->viewport_valid) {
+      const float *sc = ctx->viewport.scale, *tr = ctx->viewport.translate;
+      const float hx = fabsf(sc[0]), hy = fabsf(sc[1]);
+      const float fx = tr[0] - hx;
+      const float fy = sc[1] >= 0 ? tr[1] - hy : (float)fb->height - (tr[1] + hy);   /* an inverted-y transform flips the rows */
+      const float near = tr[2] - sc[2], far = tr[2] + sc[2];
+
+      d.vx = (int)floorf(fx + 0.5f); d.vy = (int)floorf(fy + 0.5f);
+      d.vw = (int)floorf(hx * 2 + 0.5f); d.vh = (int)floorf(hy * 2 + 0.5f);
+      d.depth_near = near; d.depth_far = far;
+      if (fabsf(fx - d.vx) > 0.01f || fabsf(fy - d.vy) > 0.01f || fabsf(hx * 2 - d.vw) > 0.01f || fabsf(hy * 2 - d.vh) > 0.01f ||
+          d.vx < 0 || d.vy < 0 || d.vx + d.vw > (int)fb->width || d.vy + d.vh > (int)fb->height ||
+          near < -1e-4f || far > 1.0001f || near > far)
+         d.unmapped_state = true;
+   } else {
+      d.vx = d.vy = 0; d.vw = fb->width; d.vh = fb->height;
+      d.depth_near = 0.0; d.depth_far = 1.0;
+   }
    for (i = 0; i < 8; i++) d.textures |= ctx->textures[i] != NULL;
    d.vs_uniforms = ctx->vs && ctx->vs->native && (ctx->vs->native->sa_uniform_count || ctx->vs->native->sa_pool_count);
    d.fs_uniforms = ctx->fs && ctx->fs->native && (ctx->fs->native->sa_uniform_count || ctx->fs->native->sa_pool_count);
    d.triangles = info->mode == MESA_PRIM_TRIANGLES;
+   d.lines = info->mode == MESA_PRIM_LINES;
    d.vp_scale[0] = ctx->viewport_valid ? ctx->viewport.scale[0] : fb->width * 0.5f;
    d.vp_scale[1] = ctx->viewport_valid ? ctx->viewport.scale[1] : fb->height * 0.5f;
    if (ctx->vs && ctx->vs->native) { d.vs_code = ctx->vs->native->code; d.vs_words = ctx->vs->native->num_words; }

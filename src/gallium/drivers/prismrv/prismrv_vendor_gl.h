@@ -30,8 +30,19 @@ struct prismrv_vk_gl_draw {
    unsigned fb_w, fb_h;
    uint32_t rt_va, rt_handle;
    bool rt_rgba8;                   /* PIPE_FORMAT_R8G8B8A8_UNORM */
-   bool has_zs, blend, textures, vs_uniforms, fs_uniforms, triangles;
+   bool has_zs, blend, textures, vs_uniforms, fs_uniforms, triangles, lines;
    float vp_scale[2];
+   /* fixed-function state the frame carries (the emitter's measured ISP words, prismrv_vendor_emit.c) */
+   bool has_depth;                  /* a Z16 depth surface is bound: zs_va / zs_handle */
+   uint32_t zs_va, zs_handle;
+   bool depth_test, depth_write;    /* depth_test is meaningful with has_depth only */
+   uint8_t depth_func;              /* enum prismrv_vk_func (= PIPE_FUNC_*) */
+   uint8_t cull;                    /* enum prismrv_vk_cull */
+   bool color_mask[4];              /* r, g, b, a */
+   int vx, vy, vw, vh;              /* viewport rectangle in GL window coordinates (origin bottom left) */
+   double depth_near, depth_far;
+   bool stencil_test, alpha_test, scissor_partial;   /* state the vendor path cannot carry: refused */
+   bool unmapped_state;
    const uint64_t *vs_code; unsigned vs_words;    /* native USSE, vertex stage */
    const uint64_t *fs_code; unsigned fs_words;    /* native USSE, fragment stage */
    unsigned vs_varyings, fs_varyings;   /* varying slots the VS writes / the FS reads (position, point size, face etc. not counted) */

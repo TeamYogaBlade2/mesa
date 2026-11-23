@@ -804,6 +804,8 @@ prismrv_create_depth_stencil_alpha_state(
    s->depth_enabled = tmpl->depth_enabled;
    s->depth_writemask = tmpl->depth_writemask;
    s->depth_func = tmpl->depth_func;
+   s->stencil_enabled = tmpl->stencil[0].enabled || tmpl->stencil[1].enabled;
+   s->alpha_enabled = tmpl->alpha_enabled;
    return s;
 }
 

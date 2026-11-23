@@ -78,9 +78,52 @@ main(void)
 
    memset(&d, 0, sizeof d);
    d.fb_w = d.fb_h = 64; d.rt_va = 0x10100000; d.rt_handle = 77; d.rt_rgba8 = true; d.triangles = true;
+   d.vw = d.vh = 64; d.depth_far = 1.0; d.color_mask[0] = d.color_mask[1] = d.color_mask[2] = d.color_mask[3] = true;
+
    d.vp_scale[0] = d.vp_scale[1] = 32.0f;
    d.vs_code = vs; d.vs_words = 2; d.fs_code = fs; d.fs_words = 2;
    d.n_attrs = 1; d.attr[0].va = 0x10197000; d.attr[0].handle = 78; d.attr[0].ncomp = 3; d.attr[0].stride = 12; d.attr[0].is_float = true;
+
+   {  /* fixed-function state: what is carried, what is refused (own context so the frame counters stay independent) */
+      struct fake f4; static struct prismrv_vk_gl g4; struct prismrv_vk_ops ops4 = ops; struct prismrv_vk_gl_draw x;
+      memset(&f4, 0, sizeof f4); ops4.user = &f4;
+      CHECK(prismrv_vk_gl_init(&g4, &ops4, 0x00108368, &why) == 0, "init g4: %s", why);
+#define STATE_REFUSED(setup, text) do { x = d; setup; \
+         CHECK(prismrv_vk_gl_record_draw(&g4, &x, &why) == -ENOTSUP && strstr(why, text), "'%s' not refused (%s)", text, why); } while (0)
+      STATE_REFUSED(x.has_zs = true, "Z16");
+      STATE_REFUSED(x.has_depth = true, "no GPU address");               /* depth surface without VA/handle */
+      STATE_REFUSED(x.stencil_test = true, "stencil test");
+      STATE_REFUSED(x.alpha_test = true, "alpha test");
+      STATE_REFUSED(x.scissor_partial = true, "scissor");
+      STATE_REFUSED(x.unmapped_state = true, "not measured");
+      STATE_REFUSED(x.vw = 0, "empty viewport");
+      STATE_REFUSED(x.triangles = false, "triangle and line");
+      /* accepted: depth + cull + colour mask + a viewport offset + lines */
+      d.count = 3;
+      x = d; x.has_depth = true; x.zs_va = 0x10120000; x.zs_handle = 88; x.depth_test = x.depth_write = true; x.depth_func = 1;
+      x.cull = 2; x.color_mask[1] = false; x.vx = 8; x.vy = 8; x.vw = x.vh = 32;
+      CHECK(prismrv_vk_gl_record_draw(&g4, &x, &why) == 0, "depth/cull/mask draw refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g4, &why) == 0, "depth flush: %s", why);
+      CHECK(f4.submits == 1, "depth frame submits %u", f4.submits);
+      {
+         unsigned k; bool zs_bo = false;
+         for (k = 0; k < f4.last.num_bos; k++) zs_bo |= f4.last_bos[k] == 88;
+         CHECK(zs_bo, "depth surface BO missing from the submit");
+      }
+      {  /* the HWRENDERDETAILS block (3DREGISTERS dw1 = 0x40700000) must carry the depth surface at dw2 and the depth format word at dw18 */
+         unsigned b, i; bool found = false;
+         for (b = 0; b < f4.n && !found; b++)
+            for (i = 0; f4.bo[b].mem && i + 80 <= f4.bo[b].size; i += 4) {
+               const uint32_t *w = (const uint32_t *)(f4.bo[b].mem + i);
+               if (w[1] == 0x40700000 && w[0] == d.rt_va && w[2] == 0x10120000 && w[18] == 0x00151008) { found = true; break; }
+            }
+         CHECK(found, "3DREGISTERS with depth_va 0x10120000 / dw18 0x00151008 not found in any BO");
+      }
+      x = d; x.triangles = false; x.lines = true; x.count = 3;
+      CHECK(prismrv_vk_gl_record_draw(&g4, &x, &why) == 0, "line draw refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g4, &why) == 0, "line flush: %s", why);
+   }
+
    d.count = 3;
 
    /* each unsupported feature is refused with a reason and counted */

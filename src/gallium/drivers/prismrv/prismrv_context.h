@@ -113,6 +113,8 @@ struct prismrv_depth_stencil_alpha_state {
    bool depth_enabled;
    bool depth_writemask;
    unsigned depth_func;         /* PIPE_FUNC_* */
+   bool stencil_enabled;        /* either face */
+   bool alpha_enabled;
 };
 
 /* dirty bits: state that must be re-sent in the command stream */
