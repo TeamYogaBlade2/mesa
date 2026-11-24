@@ -30,10 +30,13 @@ enum prismrv_vk_desc {
 };
 
 #define PRISMRV_VK_MAX_EXTRA_DRAWS 3
+/* the draw word's count field is bits 19:0; swept against the vendor UMD at 1, 2, 63, 64, 65, 67, 126 and 300 (multi-draw-pass.md 3b).  Larger counts
+ * are not measured and are refused. */
+#define PRISMRV_VK_MAX_INDEX_COUNT 300
 
 struct prismrv_vk_extra_draw {
    bool lines;
-   uint8_t index_count;        /* 1..63 */
+   uint16_t index_count;       /* 1..PRISMRV_VK_MAX_INDEX_COUNT */
    uint32_t index_va;
    uint32_t class_a_va;        /* device VA of the 3-dword state-list-A object; REQUIRED when `lines` differs from the previous draw */
 };
@@ -42,7 +45,7 @@ struct prismrv_vk_stream_params {
    bool stencil;               /* stencil attachment: first task word 1a022204 instead of 1a022203 */
    bool varying;               /* vertex program writes a varying */
    uint8_t n_attrs;            /* vertex attributes, 1..127 */
-   uint8_t index_count;        /* 1..63 */
+   uint16_t index_count;       /* 1..PRISMRV_VK_MAX_INDEX_COUNT */
    uint32_t clear_quad_va;     /* device VA of the clear quad's index data */
    uint32_t index_va;          /* device VA of the draw's index data */
    bool lines;                 /* GL_LINES instead of triangles */

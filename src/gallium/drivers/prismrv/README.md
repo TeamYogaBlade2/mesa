@@ -35,7 +35,10 @@ Fixed-function state carried by the vendor frame (the emitter's measured ISP wor
 depth test / function / write mask, back/front face culling (default counter-clockwise front face only), colour write mask, a viewport
 rectangle and depth range inside the target, GL_LINES.  Refused with a message instead of being ignored: stencil surfaces and stencil test
 (no captured kick holds a stencil surface address), alpha test, blending, a scissor that does not cover the target, clockwise-front culling,
-viewports outside the target, depth ranges outside [0,1], textures, shader uniforms, more than one draw per frame.  Unverified on hardware:
+viewports outside the target, depth ranges outside [0,1], textures, shader uniforms.  Several draws per frame (up to 4) are carried as one TA stream when every draw has the same state (only the index range may differ; measured on
+variants2/cfg7) and the same primitive class; GL_TRIANGLES / GL_LINES index counts are rounded like the vendor UMD does (3*floor(N/3), 2*floor(N/2); fewer
+than one primitive emits nothing) and may reach 300 per draw (the measured sweep).  Different state, a class change (needs the unwired state-list-A re-emit
+object) and more than four draws are refused.  Unverified on hardware:
 the Z16 surface layout and the depth-clear value (the vendor frame's background object decides it).
 
 Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`

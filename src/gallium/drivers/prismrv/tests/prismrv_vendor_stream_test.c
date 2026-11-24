@@ -47,7 +47,20 @@ main(void)
    bad = ok; bad.n_attrs = 0;           fails += prismrv_vk_stream_build(&bad, out, 29) != 0;
    bad = ok; bad.n_attrs = 128;         fails += prismrv_vk_stream_build(&bad, out, 29) != 0;
    bad = ok; bad.index_count = 0;       fails += prismrv_vk_stream_build(&bad, out, 29) != 0;
-   bad = ok; bad.index_count = 64;      fails += prismrv_vk_stream_build(&bad, out, 29) != 0;
+   bad = ok; bad.index_count = PRISMRV_VK_MAX_INDEX_COUNT + 1; fails += prismrv_vk_stream_build(&bad, out, 29) != 0;   /* above the measured sweep */
+   {  /* counts the vendor UMD was swept at (63, 64, 126, 300) encode as the count field only (multi-draw-pass.md 3b) */
+      static const uint16_t sweep[] = { 63, 64, 126, 300 };
+      unsigned k, nn;
+
+      for (k = 0; k < 4; k++) {
+         bad = ok; bad.index_count = sweep[k];
+         nn = prismrv_vk_stream_build(&bad, out, 29);
+         if (!nn || out[12] != (0x81c00000u | sweep[k])) {
+            fprintf(stderr, "count %u: n=%u draw word %08x\n", sweep[k], nn, nn ? out[12] : 0);
+            fails++;
+         }
+      }
+   }
    bad = ok; bad.desc_va[2] |= 8;       fails += prismrv_vk_stream_build(&bad, out, 29) != 0;
    fails += prismrv_vk_stream_build(&ok, out, 28) != 0;
 

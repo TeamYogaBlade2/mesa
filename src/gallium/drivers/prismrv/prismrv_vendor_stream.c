@@ -36,7 +36,7 @@ prismrv_vk_stream_build(const struct prismrv_vk_stream_params *p, uint32_t *out,
    bool prev_lines = p->lines;
    unsigned need = 29 + 6 * p->n_extra;
 
-   if (p->n_attrs < 1 || p->n_attrs > 127 || p->index_count < 1 || p->index_count > 63 || p->n_extra > PRISMRV_VK_MAX_EXTRA_DRAWS)
+   if (p->n_attrs < 1 || p->n_attrs > 127 || p->index_count < 1 || p->index_count > PRISMRV_VK_MAX_INDEX_COUNT || p->n_extra > PRISMRV_VK_MAX_EXTRA_DRAWS)
       return 0;
    for (i = 0; i < PRISMRV_VK_DESC_COUNT; i++)
       if (p->desc_va[i] & 0xf)
@@ -45,7 +45,7 @@ prismrv_vk_stream_build(const struct prismrv_vk_stream_params *p, uint32_t *out,
       const struct prismrv_vk_extra_draw *e = &p->extra[i];
       bool change = e->lines != prev_lines;
 
-      if (e->index_count < 1 || e->index_count > 63 || (change && (!e->class_a_va || (e->class_a_va & 0xf))))
+      if (e->index_count < 1 || e->index_count > PRISMRV_VK_MAX_INDEX_COUNT || (change && (!e->class_a_va || (e->class_a_va & 0xf))))
          return 0;
       need += change ? 2 : 0;
       prev_lines = e->lines;

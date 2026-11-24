@@ -83,8 +83,11 @@ struct prismrv_vk_frame_in {
    uint8_t n_attrs;
    bool varying;
    uint32_t clear_quad_va, index_va;   /* clear_quad_va == 0: the context generates the clear triangle's index data */
-   uint8_t index_count;
+   uint16_t index_count;
    bool lines;
+   /* further draws of the same state and primitive class (measured: variants2/cfg7; multi-draw-pass.md): [draw][pair][vertex PDS record] each */
+   unsigned n_extra_draws;
+   struct { uint16_t index_count; uint32_t index_va; } extra_draw[3];
    /* blocks the caller owns the contents of (copied into the PDS arena) */
    const uint32_t *scissor_block; unsigned n_scissor;   /* the clear quad's vertex block; or leave empty and set clear_w/clear_h */
    float clear_w, clear_h; uint32_t clear_colour;      /* generate the block (captured with 128/256 square, colour 0xff000000) */

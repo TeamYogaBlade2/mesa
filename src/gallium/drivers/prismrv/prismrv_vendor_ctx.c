@@ -318,6 +318,14 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
    }
    sp.index_va = in->index_va;
    sp.lines = in->lines;
+   if (in->n_extra_draws > PRISMRV_VK_MAX_EXTRA_DRAWS)
+      FAIL(-EINVAL, "too many extra draws");
+   sp.n_extra = in->n_extra_draws;
+   for (unsigned k = 0; k < in->n_extra_draws; k++) {   /* same primitive class: no state-list-A re-emit */
+      sp.extra[k].lines = in->lines;
+      sp.extra[k].index_count = in->extra_draw[k].index_count;
+      sp.extra[k].index_va = in->extra_draw[k].index_va;
+   }
    sp.full = gl.vx == 0 && gl.vy == 0 && gl.vw == (int32_t)gl.width && gl.vh == (int32_t)gl.height;   /* same rule as `full` above */
    sp.desc_va[PRISMRV_VK_DESC_STATE_A] = a_va;
    sp.desc_va[PRISMRV_VK_DESC_SCISSOR] = scd_va;

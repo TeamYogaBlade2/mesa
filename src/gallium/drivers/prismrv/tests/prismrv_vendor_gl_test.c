@@ -140,7 +140,7 @@ main(void)
       REFUSE(n_attrs, 3, "attributes");
       REFUSE(attr[0].is_float, false, "floats");
       REFUSE(vs_code, NULL, "native");
-      REFUSE(count, 2, "empty");
+      REFUSE(count, 2, "fewer indices");
       x = d; x.vs_varyings = x.fs_varyings = 1;       /* a varying with a single attribute: unmeasured */
       CHECK(prismrv_vk_gl_record_draw(&g, &x, &why) == -ENOTSUP && strstr(why, "measured"), "1 varying/1 attr not refused (%s)", why);
       REFUSE(fs_varyings, 1, "differ");               /* VS writes none, FS reads one */
@@ -151,11 +151,52 @@ main(void)
       CHECK(g.dropped == 14, "dropped %u", g.dropped);
    }
 
+   {  /* multi-draw (one state block, [draw][pair][vertex PDS] per extra draw) and the vendor UMD's index-count rounding */
+      struct fake f5; static struct prismrv_vk_gl g5; struct prismrv_vk_ops ops5 = ops; struct prismrv_vk_gl_draw x;
+      unsigned b, i, words;
+      memset(&f5, 0, sizeof f5); ops5.user = &f5;
+      CHECK(prismrv_vk_gl_init(&g5, &ops5, 0x00108368, &why) == 0, "init g5: %s", why);
+      #define DRAW_WORDS(word) (words = 0, ({ for (b = 0; b < f5.n; b++) for (i = 0; f5.bo[b].mem && i + 4 <= f5.bo[b].size; i += 4) \
+            if (*(const uint32_t *)(f5.bo[b].mem + i) == (word)) words++; words; }))
+      /* TRIANGLES: 3 * floor(N / 3); 4 -> 3 */
+      x = d; x.count = 4;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "4 indices refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush 4: %s", why);
+      CHECK(DRAW_WORDS(0x81c00003u) >= 2, "N=4 must encode a count of 3 (clear quad + user draw), saw %u", words);
+      /* 100 -> 99 = 0x63 (above the old 63 limit) */
+      x = d; x.count = 100;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "100 indices refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush 100: %s", why);
+      CHECK(DRAW_WORDS(0x81c00063u) == 1, "N=100 must encode a count of 99, saw %u", words);
+      x = d; x.count = 301;                                              /* 300 after rounding is fine, 303 is not: 301 -> 300 */
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "301 indices (300 after rounding) refused: %s", why);
+      CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush 301: %s", why);
+      x = d; x.count = 303;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == -ENOTSUP && strstr(why, "300"), "303 indices not refused (%s)", why);
+      /* three draws of the same state: one clear quad + three user draws */
+      x = d; x.count = 3;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "draw 1: %s", why);
+      x.first = 3; CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "draw 2: %s", why);
+      x.first = 6; x.count = 6; CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "draw 3: %s", why);
+      x.first = 12; x.count = 3; CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "draw 4: %s", why);
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == -ENOTSUP && strstr(why, "four draws"), "5th draw not refused (%s)", why);
+      CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush 4 draws: %s", why);
+      CHECK(DRAW_WORDS(0x81c00006u) >= 1 && DRAW_WORDS(0x81c00003u) >= 3 + 1, "4 draws: expected counts 3,3,6,3 (+ clear quad), saw %u of 0x81c00003", words);
+      /* a further draw must match the first one's state; a class change needs the (unwired) re-emit object */
+      x = d; x.count = 3;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == 0, "draw A: %s", why);
+      x.n_attrs = 1; x.attr[0].stride = 16; 
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == -ENOTSUP && strstr(why, "different state"), "different state accepted (%s)", why);
+      x = d; x.count = 3; x.triangles = false; x.lines = true;
+      CHECK(prismrv_vk_gl_record_draw(&g5, &x, &why) == -ENOTSUP && strstr(why, "class change"), "class change accepted (%s)", why);
+      CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush A: %s", why);
+   }
+
    /* a clear then a non-indexed draw: one submit, scene BOs + the three resources */
    prismrv_vk_gl_record_clear(&g, 1.0f, 0.5f, 0.0f, 1.0f);
    CHECK(g.clear_colour == 0xff0080ffu, "clear colour 0x%08x", g.clear_colour);
    CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == 0, "draw refused: %s", why);
-   CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == -ENOTSUP && strstr(why, "more than one"), "second draw not refused");
+   CHECK(prismrv_vk_gl_record_draw(&g, &d, &why) == 0, "a second draw with identical state refused: %s", why);
    CHECK(prismrv_vk_gl_flush(&g, &why) == 0, "flush: %s", why);
    CHECK(f.submits == 1, "submits %u", f.submits);
    {

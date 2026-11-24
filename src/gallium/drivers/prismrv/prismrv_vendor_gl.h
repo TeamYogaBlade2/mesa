@@ -24,7 +24,7 @@
 #define PRISMRV_VK_HWRC_PD_OFFSET 0x08
 
 #define PRISMRV_VK_GL_MAX_ATTRS 2
-#define PRISMRV_VK_GL_MAX_EXTRA_BOS 8
+#define PRISMRV_VK_GL_MAX_EXTRA_BOS 12
 
 struct prismrv_vk_gl_draw {
    unsigned fb_w, fb_h;
@@ -60,7 +60,9 @@ struct prismrv_vk_gl {
    uint32_t hwrc_va, hwrc_handle;   /* handle 0 = the caller-supplied address (PRISMRV_VENDOR_HWRC): no BO to map for it */
    /* recorded frame */
    bool have_draw, have_clear;
-   struct prismrv_vk_gl_draw draw;
+   struct prismrv_vk_gl_draw draw;                  /* the first draw: it defines the frame's state */
+   unsigned n_more;                                 /* further draws with identical state (0..3) */
+   struct prismrv_vk_gl_draw more[3];
    uint32_t clear_colour;           /* packed R | G << 8 | B << 16 | A << 24 */
    unsigned dropped;
    uint32_t extra[PRISMRV_VK_GL_MAX_EXTRA_BOS];

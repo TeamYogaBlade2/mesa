@@ -60,12 +60,32 @@ prismrv_vk_gl_init(struct prismrv_vk_gl *g, const struct prismrv_vk_ops *ops, ui
    return 0;
 }
 
+/*
+ * A frame is one TA stream: a state block followed by [draw][pair][vertex PDS record] per draw.  Only the index range may differ between its draws
+ * (measured: variants2/cfg7, multi-draw-pass.md), so a further draw is accepted only when every other field equals the first draw's.  Draws that
+ * upload user-pointer data get a temporary BO each (different VAs), so they cannot be merged and are refused as "different state".
+ */
+static bool
+same_frame_state(const struct prismrv_vk_gl_draw *a, const struct prismrv_vk_gl_draw *b)
+{
+   struct prismrv_vk_gl_draw x = *b;
+
+   x.first = a->first; x.count = a->count; x.indexed = a->indexed; x.index_va = a->index_va; x.index_handle = a->index_handle;
+   return memcmp(a, &x, sizeof(x)) == 0;
+}
+
+/* GL_TRIANGLES / GL_LINES index counts as the vendor UMD emits them (multi-draw-pass.md 3b): 3*floor(N/3), 2*floor(N/2) */
+static unsigned
+round_count(const struct prismrv_vk_gl_draw *d)
+{
+   return d->lines ? d->count - d->count % 2 : d->count - d->count % 3;
+}
+
 int
 prismrv_vk_gl_record_draw(struct prismrv_vk_gl *g, const struct prismrv_vk_gl_draw *d, const char **why)
 {
 #define REJECT(m) do { *why = m; g->dropped++; return -ENOTSUP; } while (0)
    if (!g->ready) REJECT("vendor path not initialised");
-   if (g->have_draw) REJECT("more than one draw per frame (the vendor frame shape has exactly one)");
    if (!d->triangles && !d->lines) REJECT("only triangle and line lists are supported");
    if (!d->rt_rgba8 || !d->rt_va) REJECT("render target must be an RGBA8 resource");
    if (d->has_zs) REJECT("only a Z16 depth surface is wired (no stencil surface: its address is in no captured kick)");
@@ -88,10 +108,24 @@ prismrv_vk_gl_record_draw(struct prismrv_vk_gl *g, const struct prismrv_vk_gl_dr
    if (d->vs_varyings != d->fs_varyings) REJECT("the VS varying outputs and the FS varying inputs differ (unmeasured)");
    if (d->vs_varyings > 1) REJECT("more than one varying is not measured");
    if ((d->vs_varyings == 1) != (d->n_attrs == 2)) REJECT("only 'one varying + two attributes' or 'no varying + one attribute' are measured");
-   if (d->count < 3) REJECT("empty draw");
+   {
+      /* the vendor UMD drops a draw that cannot form one whole primitive; a partial trailing primitive is cut off */
+      const unsigned n = round_count(d);
+
+      if (n < (d->lines ? 2u : 3u)) REJECT("fewer indices than one primitive (the vendor UMD emits no draw record for it)");
+      if (n > PRISMRV_VK_MAX_INDEX_COUNT) REJECT("more than 300 indices per draw (the draw word was only measured up to 300)");
+   }
    if (d->indexed && !d->index_va) REJECT("index buffer must be a resource");
    if (d->count > 0xffff) REJECT("more than 65535 vertices/indices");
+   if (g->have_draw) {
+      if (g->n_more >= PRISMRV_VK_MAX_EXTRA_DRAWS) REJECT("more than four draws per frame (the emitter models three extra draws)");
+      if (d->lines != g->draw.lines) REJECT("a primitive class change inside a frame needs the state-list-A re-emit object (not wired)");
+      if (!same_frame_state(&g->draw, d)) REJECT("a further draw with different state: one kick carries one state block");
+      g->more[g->n_more++] = *d;
+      return 0;
+   }
    g->draw = *d;
+   g->n_more = 0;
    g->have_draw = true;
    return 0;
 }
@@ -159,17 +193,29 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
    }
 
    /* index data: the caller's u16 buffer, or 0,1,2,... generated for a non-indexed draw */
-   if (d->indexed) {
-      in.index_va = d->index_va;
-   } else {
+   for (i = 0; i <= g->n_more; i++) {
+      const struct prismrv_vk_gl_draw *x = i ? &g->more[i - 1] : d;
+      const unsigned n = round_count(x);
       uint32_t va;
-      uint16_t *ix = (uint16_t *)prismrv_vk_arena_alloc(&g->vk.arena[PRISMRV_VK_ARENA_DATA], (d->count * 2 + 15) & ~15u, 16, &va);
 
-      if (!ix) { *why = "data arena full"; r = -ENOSPC; goto out; }
-      for (i = 0; i < d->count; i++) ix[i] = d->first + i;
-      in.index_va = va;
+      if (x->indexed) {
+         va = x->index_va;
+      } else {
+         uint16_t *ix = (uint16_t *)prismrv_vk_arena_alloc(&g->vk.arena[PRISMRV_VK_ARENA_DATA], (n * 2 + 15) & ~15u, 16, &va);
+         unsigned k;
+
+         if (!ix) { *why = "data arena full"; r = -ENOSPC; goto out; }
+         for (k = 0; k < n; k++) ix[k] = x->first + k;
+      }
+      if (i == 0) {
+         in.index_va = va;
+      } else {
+         in.extra_draw[i - 1].index_va = va;
+         in.extra_draw[i - 1].index_count = n;
+      }
    }
-   in.index_count = d->count;
+   in.index_count = round_count(d);
+   in.n_extra_draws = g->n_more;
    in.clear_w = (float)d->fb_w;
    in.clear_h = (float)d->fb_h;
    in.clear_colour = g->have_clear ? g->clear_colour : 0xff000000;
@@ -188,7 +234,14 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
       if (d->has_depth && d->zs_handle) bos[n++] = d->zs_handle;
       if (g->hwrc_handle) bos[n++] = g->hwrc_handle;
       for (i = 0; i < d->n_attrs && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS; i++) bos[n++] = d->attr[i].handle;
-      if (d->indexed && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS) bos[n++] = d->index_handle;
+      for (i = 0; i <= g->n_more; i++) {
+         const struct prismrv_vk_gl_draw *x = i ? &g->more[i - 1] : d;
+
+         unsigned k; bool dup = false;
+
+         for (k = SCENE_BO_COUNT; k < n; k++) dup |= bos[k] == x->index_handle;     /* the same index buffer used twice */
+         if (x->indexed && !dup && n < SCENE_BO_COUNT + PRISMRV_VK_GL_MAX_EXTRA_BOS) bos[n++] = x->index_handle;
+      }
       memcpy(g->extra, bos + SCENE_BO_COUNT, (n - SCENE_BO_COUNT) * 4);
       g->n_extra = n - SCENE_BO_COUNT;
       /* the scene handles lead; extra_bos must hold all of them in one array */
@@ -201,5 +254,6 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
    r = prismrv_vk_ctx_frame(&g->vk, &in, &res, why);
 out:
    g->have_draw = g->have_clear = false;
+   g->n_more = 0;
    return r;
 }
