@@ -33,10 +33,11 @@ prismrv_vk_shader_descriptor(uint32_t code_va, uint32_t *out)
 
 /*
  * Code handles: w = (((code_va - code_base) >> 3) << 4) | nibble, nibble 7 for the pixel heap's programs (PDS records) and 2 for
- * the vertex heap's programs (a vertex program object's ctl word at dw[4n], an access object's at dw4).  code_base is the
- * code-base register value of the heap (the UMD's per run constant, 0xf4000668 / 0xfc000010 in the captures; analysis/CODE_HANDLES.md):
- * exact on 40 distinct (base, VA, handle) captured tuples.  The hardware adds the same base, so the driver must encode with the base
- * its kernel programs.
+ * the vertex heap's programs (a vertex program object's ctl word at dw[4n], an access object's at dw4).  The driver encodes against the
+ * bank base of the heap (pixel 0xf4000000 = bank 0, vertex 0xfc000000 = bank 10; bank VA = ADDR << 6, 8 MiB banks - analysis/MEMORY_MAP.md).
+ * The stock UMD in the captures encodes against base + 0x10 (vertex) / base + 0x408..0x668 (pixel, per run), but the emulator never reports
+ * the heap bases to it, so those may be artifacts; PRISMRV_VENDOR_{P,V}CODE_BIAS (prismrv_vendor_ctx.c) re-encode for a hardware offset.
+ * The captured tuples are exact (40 distinct (base, VA, handle) tuples, prismrv_vendor_handles_test).
  */
 #define PRISMRV_VK_VCODE_HEAP_BASE 0xfc000000u   /* vertex USSE heap (UAPI heap 5); the code base the driver's kernel programs must match */
 #define PRISMRV_VK_HANDLE_PIXEL  7u
