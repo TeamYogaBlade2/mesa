@@ -41,6 +41,10 @@ than one primitive emits nothing) and may reach 300 per draw (the measured sweep
 object) and more than four draws are refused.  Unverified on hardware:
 the Z16 surface layout and the depth-clear value (the vendor frame's background object decides it).
 
+Code-handle bases follow the stock UMD's measured pairs (analysis/CODE_BASE_COUPLING.md): vertex `0xfc000000 + 0x10`, pixel `0xf4000000 + 0x4f8 - 0x10 * low byte
+of 3DREGISTERS dw25` (default dw25 `0x0280640e` -> `0x418`); `PRISMRV_VENDOR_3D_DW25`, `PRISMRV_VENDOR_PCODE_BIAS` and `PRISMRV_VENDOR_VCODE_BIAS` override.  The first
+0x500 / 0x20 bytes of the pixel / vertex code arenas are reserved so that code is always addressable.
+
 Known gaps of the vendor path (see the prismrv repository, `analysis/VENDOR_PATH_STATUS.md`): FS binding `dw3`
 (placeholder 0x2fc0000f), unmeasured heap-1/10 contents, HWPBDESC fixed
 0x80217800/0x80200000, the USE code base selection for pixel 0xf4000000 / vertex 0xfc000000.

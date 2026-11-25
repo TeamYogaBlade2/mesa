@@ -130,7 +130,7 @@ main(void)
    /* code and its binding */
    CHECK(r.code_va >= 0xf4000000 && !(r.code_va & 7), "code va 0x%08x", r.code_va);
    CHECK(memcmp(dev(&f, r.code_va), in.code, in.code_size) == 0, "code bytes");
-   CHECK(prismrv_vk_shader_descriptor_va(rd(&f, r.binding_va)) == r.code_va, "binding word 0x%08x does not decode to the code va", rd(&f, r.binding_va));
+   CHECK(prismrv_vk_shader_descriptor_va(rd(&f, r.binding_va)) + 0x418u == r.code_va,   /* default pixel base: dw25 = 0x0e <-> bias 0x418 */ "binding word 0x%08x does not decode to the code va", rd(&f, r.binding_va));
    /* the fragment binding is the 0x070001b5 object (not the process-constant 0x070001a5 one) and the ISP state list B points at it */
    CHECK(rd(&f, r.binding_va + 16) == 0x070001b5 && rd(&f, r.binding_va + 4) == 2, "fragment binding program words");
    CHECK(r.binding_va == (r.binding_va & ~0x1fu) && (r.binding_va & 0xf0000000) == 0xe0000000, "binding va 0x%08x", r.binding_va);
@@ -203,7 +203,7 @@ main(void)
       /* the header-less epilogue's ctl is the handle of the END program the context placed in the vertex code heap (nibble 2) */
       CHECK(rec_task[5] == 0x0800e100 && (rd(&f, rec_va[5]) & 0xf) == PRISMRV_VK_HANDLE_VERTEX &&
             prismrv_vk_code_handle_va(PRISMRV_VK_VCODE_HEAP_BASE, rd(&f, rec_va[5])) >= 0xfc000000 &&
-            rd(&f, prismrv_vk_code_handle_va(PRISMRV_VK_VCODE_HEAP_BASE, rd(&f, rec_va[5])) + 4) == 0xfa4c0700, "epilogue 0");
+            rd(&f, prismrv_vk_code_handle_va(PRISMRV_VK_VCODE_HEAP_BASE, rd(&f, rec_va[5])) + 0x10u + 4) == 0xfa4c0700, "epilogue 0");
       CHECK(rec_va[6] == rec_va[7] && rec_va[7] == rec_va[8] && rd(&f, rec_va[6]) == 0x800, "pair epilogues do not share one object");
       CHECK(rec_cls[9] == 6 && rec_task[9] == 0x1a022201 && rd(&f, rec_va[9]) == 0x2000, "fragment-output epilogue");
    }
@@ -262,6 +262,22 @@ main(void)
       for (unsigned i = 0; i < 400 && !ret; i++)
          ret = prismrv_vk_ctx_frame(&c, &in, &rr, &why);
       CHECK(ret == -ENOSPC, "arena exhaustion gave %d", ret);
+   }
+
+   {  /* the pixel code base follows dw25 (CODE_BASE_COUPLING.md): K' = 0x4f8 - 0x10 * low byte; the vertex base stays 0x10 */
+      static struct fake f2;
+      struct prismrv_vk_ops ops2 = { .user = &f2, .bo_create = f_create, .bo_map = f_map, .submit = f_submit };
+      struct prismrv_vk_ctx c2;
+      struct prismrv_vk_frame_in in2 = make_in();
+      struct prismrv_vk_frame_result r2;
+
+      memset(&f2, 0, sizeof f2);
+      f2.honour_heap = true;
+      CHECK(prismrv_vk_ctx_init(&c2, &ops2, &why) == 0, "init c2: %s", why);
+      in2.gl.dw25 = 0x0280640f;
+      CHECK(prismrv_vk_ctx_frame(&c2, &in2, &r2, &why) == 0, "frame with dw25 0x0f: %s", why);
+      CHECK(prismrv_vk_shader_descriptor_va(rd(&f2, r2.binding_va)) + 0x408u == r2.code_va, "dw25 low byte 0x0f must move the pixel base to 0x408 (word 0x%08x)", rd(&f2, r2.binding_va));
+      CHECK(r2.code_va >= 0xf4000500, "code below the reserved start of the code arena (0x%08x)", r2.code_va);
    }
 
    printf("vendor ctx: %d failures\n", fails);

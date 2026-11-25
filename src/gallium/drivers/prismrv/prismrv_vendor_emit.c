@@ -125,7 +125,7 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    } else {
       out->three_d[21] = out->three_d[22] = 1;
    }
-   out->three_d[25] = s->dw25 ? s->dw25 : 0x0280640e;
+   out->three_d[25] = s->dw25 ? s->dw25 : PRISMRV_VK_DW25_DEFAULT;
    out->three_d[23] = 0x3f800000;
    out->three_d[24] = 0x00000300;
    out->three_d[26] = 0x00000188;

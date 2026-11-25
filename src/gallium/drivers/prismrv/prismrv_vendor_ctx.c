@@ -39,19 +39,42 @@ va_in_heap(uint32_t heap, uint32_t va, uint32_t size)
 }
 
 /*
- * Code-handle bias (bytes, a multiple of 8).  The driver encodes handles against the code banks' base (bank VA = ADDR << 6; analysis/MEMORY_MAP.md):
- * pixel 0xf4000000 (bank 0), vertex 0xfc000000 (bank 10).  The stock UMD in the captures encodes against base + 0x10 (vertex, all 1181 sightings)
- * and base + 0x408..0x668 (pixel, per run) - but the emulator never reports the heap bases to it (sDevVAddrBase is unset), so those offsets may be
- * emulator artifacts.  If the hardware turns out to add an offset, set PRISMRV_VENDOR_PCODE_BIAS / PRISMRV_VENDOR_VCODE_BIAS (hex bytes, e.g. 10)
- * instead of rebuilding: the handles are encoded for (code VA - bias).  Default 0 = the bank base.
+ * Code-handle base (analysis/MEMORY_MAP.md 4, analysis/CODE_BASE_COUPLING.md).  The driver encodes handles against the bank base (bank VA = ADDR << 6:
+ * pixel 0xf4000000 = bank 0, vertex 0xfc000000 = bank 10) PLUS a bias, because the stock UMD does:
+ *  - vertex: 0x10 in all 1181 sightings (the TA words Mesa copies from the captures belong to that base);
+ *  - pixel: the base moves with the low byte of 3DREGISTERS dw25 as  bias = C - 0x10 * low8(dw25)  in 116 of 117 measured kicks (C = 0x4f8 for dw25 = 0x0e / 0x0f;
+ *    C = 0x740 for 0x1b / 0x1c / 0x1e, a family this driver does not emit).  Hardware sees only the kick, so the kick's dw25 is what moves the UMD's base:
+ *    K = 0 with dw25 = 0x0e was never observed and is not self-consistent.  The default pair (dw25 = 0x0280640e, bias 0x418) is the measured one.
+ * PRISMRV_VENDOR_PCODE_BIAS / PRISMRV_VENDOR_VCODE_BIAS (hex bytes, multiple of 8) override; handles are encoded for (code VA - bias).
  */
-static uint32_t
-code_bias(const char *name)
+static bool
+env_bias(const char *name, uint32_t *out)
 {
    const char *e = getenv(name);
-   uint32_t b = e && *e ? (uint32_t)strtoul(e, NULL, 16) : 0;
 
-   return b & ~7u;
+   if (!e || !*e)
+      return false;
+   *out = (uint32_t)strtoul(e, NULL, 16) & ~7u;
+   return true;
+}
+
+static uint32_t
+pcode_bias(uint32_t dw25)
+{
+   uint32_t b;
+   const uint32_t lo = (dw25 ? dw25 : PRISMRV_VK_DW25_DEFAULT) & 0xff;
+
+   if (env_bias("PRISMRV_VENDOR_PCODE_BIAS", &b))
+      return b;
+   return 0x10u * lo <= 0x4f8u ? 0x4f8u - 0x10u * lo : 0;   /* the dw25 = 0x0e / 0x0f family; other values are extrapolated */
+}
+
+static uint32_t
+vcode_bias(void)
+{
+   uint32_t b;
+
+   return env_bias("PRISMRV_VENDOR_VCODE_BIAS", &b) ? b : 0x10;
 }
 
 int
@@ -75,6 +98,11 @@ prismrv_vk_ctx_init(struct prismrv_vk_ctx *c, const struct prismrv_vk_ops *ops, 
       /* the vendor path is load-bearing on placement: refuse a BO the kernel put somewhere else */
       if (!va_in_heap(a->heap, a->va, a->size))
          FAIL(-EFAULT, "kernel placed a BO outside the requested heap");
+      /* handles encode (va - base - bias): code must lie above the largest bias in use (pixel 0x4f8 at dw25 low byte 0, vertex 0x10) */
+      if (i == PRISMRV_VK_ARENA_CODE)
+         a->used = 0x500;
+      else if (i == PRISMRV_VK_ARENA_VCODE)
+         a->used = 0x20;
       a->map = ops->bo_map(ops->user, a->handle, a->size);
       if (!a->map)
          FAIL(-ENOMEM, "BO mapping failed");
@@ -102,6 +130,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
                      const char **why)
 {
    struct prismrv_vk_state gl = in->gl;
+   const uint32_t pb = pcode_bias(in->gl.dw25), vb = vcode_bias();   /* code-handle bases: see the comment above */
    struct prismrv_vk_kick k;
    struct prismrv_vk_stream_params sp;
    uint32_t stream_va, code_va, bind_va, blk_a_va, blk_b_va, sc_va, ac_va, a_va, b_va, scd_va, acd_va, vp_va, e0_va, ep_va, eo_va;
@@ -127,7 +156,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
       uint32_t fb[PRISMRV_VK_PDS_FS_BINDING_DWORDS], bg[PRISMRV_VK_PDS_BINDING_DWORDS] = { 0 };
       uint32_t bg2[8] = { 0 };
 
-      if (!prismrv_vk_pds_fs_binding(code_va - code_bias("PRISMRV_VENDOR_PCODE_BIAS"), in->colour_varying, in->fs_bind_dw3, fb))
+      if (!prismrv_vk_pds_fs_binding(code_va - pb, in->colour_varying, in->fs_bind_dw3, fb))
          FAIL(-EFAULT, "code address cannot be encoded as a binding descriptor");
       uint32_t bg_end_va = in->bg_code_va, bg_clear_va = in->bg_code_va;
 
@@ -146,11 +175,11 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
             FAIL(-ENOSPC, "code arena full");
          memcpy(q, pc, sizeof(pc));
       }
-      if (!prismrv_vk_pds_binding(bg_end_va - code_bias("PRISMRV_VENDOR_PCODE_BIAS"), bg))
+      if (!prismrv_vk_pds_binding(bg_end_va - pb, bg))
          FAIL(-EFAULT, "background code address cannot be encoded as a binding descriptor");
       {
          uint32_t d2;
-         if (!prismrv_vk_shader_descriptor(bg_clear_va - code_bias("PRISMRV_VENDOR_PCODE_BIAS"), &d2))
+         if (!prismrv_vk_shader_descriptor(bg_clear_va - pb, &d2))
             FAIL(-EFAULT, "background code address cannot be encoded as a binding descriptor");
          bg2[0] = d2; bg2[1] = 6; bg2[3] = 0x03c0a00f; bg2[4] = 0x070001b5; bg2[5] = 0x07040c02; bg2[6] = 0xaf000000;
       }
@@ -229,7 +258,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
             if (!(q = ALLOC(PRISMRV_VK_ARENA_VCODE, bytes, 8, va)))                                         \
                FAIL(-ENOSPC, "vertex code arena full");                                                     \
             memcpy(q, src, bytes);                                                                          \
-            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va - code_bias("PRISMRV_VENDOR_VCODE_BIAS"), PRISMRV_VK_HANDLE_VERTEX, &(handle)))\
+            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va - vb, PRISMRV_VK_HANDLE_VERTEX, &(handle)))\
                FAIL(-EFAULT, "vertex code address cannot be encoded as a handle");                          \
          } while (0)
          PLACE_V(qe, sizeof(qe), h_end);
@@ -243,7 +272,7 @@ prismrv_vk_ctx_frame(struct prismrv_vk_ctx *c, const struct prismrv_vk_frame_in 
             if (!(q = ALLOC(PRISMRV_VK_ARENA_VCODE, in->vs_code_size, 8, va)))
                FAIL(-ENOSPC, "vertex code arena full");
             memcpy(q, in->vs_code, in->vs_code_size);
-            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va - code_bias("PRISMRV_VENDOR_VCODE_BIAS"), PRISMRV_VK_HANDLE_VERTEX, &h_vs))
+            if (!prismrv_vk_code_handle(PRISMRV_VK_VCODE_HEAP_BASE, va - vb, PRISMRV_VK_HANDLE_VERTEX, &h_vs))
                FAIL(-EFAULT, "vertex code address cannot be encoded as a handle");
             vs_wired = true;
          }
