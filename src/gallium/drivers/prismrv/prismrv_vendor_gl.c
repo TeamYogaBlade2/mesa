@@ -169,6 +169,11 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
    in.gl.lines = d->lines;
    for (i = 0; i < 4; i++) in.gl.color_mask[i] = d->color_mask[i];
    in.gl.rt_va = d->rt_va;
+   {  /* 3DREGISTERS dw25: session-dependent (0x0280640e / 0f / 1b / 1c / 1e in the captures); PRISMRV_VENDOR_3D_DW25=<hex> overrides the default */
+      const char *e = getenv("PRISMRV_VENDOR_3D_DW25");
+
+      in.gl.dw25 = e && *e ? (uint32_t)strtoul(e, NULL, 16) : 0;
+   }
    in.lines = d->lines;
 
    in.code = d->fs_code;

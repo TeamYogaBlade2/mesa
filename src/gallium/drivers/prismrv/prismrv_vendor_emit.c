@@ -110,6 +110,22 @@ void prismrv_vk_emit(const struct prismrv_vk_state *s, struct prismrv_vk_kick *o
    out->three_d[16] = 0x1e3ce508;
    out->three_d[17] = ta17_va;
    out->three_d[18] = (s->depth && s->stencil) ? 0x00171008 : (s->depth ? 0x00151008 : 0);
+   /*
+    * The words the Python model leaves out (CMDTA_REGISTER_BLOCKS.md; analysis/ZLS_AUX_WORDS.md):
+    *  dw21 = dw22: 1 without a depth target, 0xeff00001 with depth, 0x0009b001 with depth + stencil - the same in every capture set of that kind;
+    *  dw19 = dw20: 0 without a depth target; with one 0x97000 for a 64x64 target and 0xa3000 for 128x128 (59 captures, 3 sets: 55 / 3 / 1 with 0x98000).  The two
+    *               measured sizes differ by exactly 4 KiB per 32x32 tile, so 0x93000 + tiles * 0x1000 is used - an extrapolation beyond those two sizes.
+    *  dw25: caller's value, default the most common capture value.
+    */
+   if (s->depth) {
+      const uint32_t tiles = ((s->width + 31) / 32) * ((s->height + 31) / 32);
+
+      out->three_d[19] = out->three_d[20] = 0x00093000 + tiles * 0x1000;
+      out->three_d[21] = out->three_d[22] = s->stencil ? 0x0009b001 : 0xeff00001;
+   } else {
+      out->three_d[21] = out->three_d[22] = 1;
+   }
+   out->three_d[25] = s->dw25 ? s->dw25 : 0x0280640e;
    out->three_d[23] = 0x3f800000;
    out->three_d[24] = 0x00000300;
    out->three_d[26] = 0x00000188;

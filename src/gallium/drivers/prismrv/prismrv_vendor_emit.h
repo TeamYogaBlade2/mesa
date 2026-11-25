@@ -43,6 +43,11 @@ struct prismrv_vk_state {
    uint8_t stencil_ref;
    uint8_t st_func, st_sfail, st_zfail, st_zpass; /* enum prismrv_vk_func / _stencil_op */
    uint8_t st_write_mask, st_compare_mask;
+   /*
+    * 3DREGISTERS dw25 (register 0x4bc): `0x02806400 | low byte` in every capture, the low byte (0x0e 0x0f 0x1b 0x1c 0x1e) following the capture session
+    * (analysis/ZLS_AUX_WORDS.md).  0 = the most common value, 0x0280640e.  The Python model does not model it, so the golden test skips it.
+    */
+   uint32_t dw25;
    uint32_t stream_va;                /* device VA of the TA control stream (caller's allocation) */
    uint32_t render_details_va;        /* device VA of HWRENDERDETAILS (caller's allocation) */
    /*

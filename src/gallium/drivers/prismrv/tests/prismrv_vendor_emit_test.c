@@ -44,7 +44,24 @@ int main(void)
       prismrv_vk_emit(&g->s, &o);
       CMP("ccb", k, o.ccb, g->ccb, 0x14);
       CMP("ta", k, o.ta, g->ta, 18);
-      CMP("three_d", k, o.three_d, g->three_d, 59);
+      for (unsigned i_ = 0; i_ < 59; i_++) {
+         const bool aux = (i_ >= 19 && i_ <= 22) || i_ == 25;   /* not modelled by the Python model (golden = 0): checked below */
+
+         if (!aux && o.three_d[i_] != g->three_d[i_]) {
+            fprintf(stderr, "case %u three_d[%u]: got 0x%08x want 0x%08x\n", k, i_, o.three_d[i_], g->three_d[i_]);
+            fails++;
+         }
+      }
+      {
+         const bool d_ = g->s.depth, st_ = g->s.stencil;
+         const uint32_t tiles = ((g->s.width + 31) / 32) * ((g->s.height + 31) / 32);
+         const uint32_t w21 = !d_ ? 1u : st_ ? 0x9b001u : 0xeff00001u, w19 = d_ ? 0x93000u + tiles * 0x1000u : 0u;
+
+         if (o.three_d[19] != w19 || o.three_d[20] != w19 || o.three_d[21] != w21 || o.three_d[22] != w21 || o.three_d[25] != 0x0280640eu) {
+            fprintf(stderr, "case %u aux words %08x %08x %08x %08x %08x\n", k, o.three_d[19], o.three_d[20], o.three_d[21], o.three_d[22], o.three_d[25]);
+            fails++;
+         }
+      }
       if (o.n_a != g->n_a || o.n_b != g->n_b) {
          fprintf(stderr, "case %u: list lengths %u/%u want %u/%u\n", k, o.n_a, o.n_b, g->n_a, g->n_b);
          fails++;
