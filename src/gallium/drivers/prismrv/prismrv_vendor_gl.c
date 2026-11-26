@@ -18,25 +18,19 @@ pack_unorm8(float f)
 }
 
 /*
- * Third dword of the FS binding's PDS data slot.  Captured values: 0 (86 of 149 kicks), 0x2fc0000f (62), 0x2f80000f (1); it is not
- * determined by the shader, the drawn state, the HWRC or HWPBDESC values (analysis/FS_BINDING_DW3.md) and its meaning is unknown.
- * Default: the value of the most recent captures (placeholder).  PRISMRV_VENDOR_FS_DW3=<hex> overrides it (0 gives the other captured
- * form, with the trailing halt dword dropped by the builder) so both can be tried on hardware without rebuilding.
+ * Third dword of the FS binding's PDS data slot (analysis/FS_BINDING_DW3.md).  Captured: with the colour-varying form (dw1 = 6) it is never 0 (13 of 13:
+ * 0x2fc0000f, once 0x2f80000f); with the no-varying form it is 0 in all 63 kicks that carry the dw25 pair Mesa emits (family dw25 0x0e/0x0f), and 0 or
+ * 0x2fc0000f in the other family.  Default: varying ? 0x2fc0000f : 0.  Its meaning is unknown and nothing else in the dumps flips together with it.
+ * PRISMRV_VENDOR_FS_DW3=<hex> overrides it for both forms.
  */
 static uint32_t
-fs_bind_dw3(void)
+fs_bind_dw3(bool varying)
 {
-   static bool init;
-   static uint32_t v = 0x2fc0000f;
+   const char *e = getenv("PRISMRV_VENDOR_FS_DW3");
 
-   if (!init) {
-      const char *e = getenv("PRISMRV_VENDOR_FS_DW3");
-
-      if (e && *e)
-         v = (uint32_t)strtoul(e, NULL, 16);
-      init = true;
-   }
-   return v;
+   if (e && *e)
+      return (uint32_t)strtoul(e, NULL, 16);
+   return varying ? 0x2fc0000fu : 0;
 }
 
 int
@@ -185,7 +179,7 @@ prismrv_vk_gl_flush(struct prismrv_vk_gl *g, const char **why)
     * its dw3 is the placeholder value of the kv10 captures */
    in.varying = d->vs_varyings == 1;
    in.colour_varying = in.varying;
-   in.fs_bind_dw3 = fs_bind_dw3();
+   in.fs_bind_dw3 = fs_bind_dw3(in.varying);
 
    in.n_attrs = d->n_attrs;
    in.attr_va = d->attr[0].va;

@@ -192,6 +192,30 @@ main(void)
       CHECK(prismrv_vk_gl_flush(&g5, &why) == 0, "flush A: %s", why);
    }
 
+   {  /* the FS binding record's dw3 (analysis/FS_BINDING_DW3.md): 0 for the no-varying form, 0x2fc0000f for the colour-varying form */
+      static const struct { bool varying; uint32_t dw1, dw3, dw6; } want[2] = { { false, 2, 0, 0 }, { true, 6, 0x2fc0000fu, 0xaf000000u } };
+      unsigned k;
+
+      for (k = 0; k < 2; k++) {
+         struct fake f6; static struct prismrv_vk_gl g6; struct prismrv_vk_ops ops6 = ops; struct prismrv_vk_gl_draw x = d;
+         unsigned b, i; bool found = false;
+
+         memset(&f6, 0, sizeof f6); ops6.user = &f6;
+         CHECK(prismrv_vk_gl_init(&g6, &ops6, 0x00108368, &why) == 0, "init g6: %s", why);
+         x.count = 3;
+         if (want[k].varying) { x.n_attrs = 2; x.attr[1] = x.attr[0]; x.attr[1].va = 0x10198000; x.attr[1].handle = 79; x.vs_varyings = x.fs_varyings = 1; }
+         CHECK(prismrv_vk_gl_record_draw(&g6, &x, &why) == 0, "fs binding draw %u: %s", k, why);
+         CHECK(prismrv_vk_gl_flush(&g6, &why) == 0, "fs binding flush %u: %s", k, why);
+         /* the record is [desc][dw1][0][dw3][070001b5][dw5][dw6][0]: find it by its fixed code word */
+         for (b = 0; b < f6.n && !found; b++)
+            for (i = 12; f6.bo[b].mem && i + 16 <= f6.bo[b].size; i += 4) {
+               const uint32_t *w = (const uint32_t *)(f6.bo[b].mem + i);
+               if (w[0] == 0x070001b5u && w[-3] == want[k].dw1 && w[-1] == want[k].dw3 && w[2] == want[k].dw6) { found = true; break; }   /* w[0] = code word: dw4 */
+            }
+         CHECK(found, "FS binding (%s): dw1 %u / dw3 %#x / dw6 %#x not found", want[k].varying ? "varying" : "no varying", want[k].dw1, want[k].dw3, want[k].dw6);
+      }
+   }
+
    /* a clear then a non-indexed draw: one submit, scene BOs + the three resources */
    prismrv_vk_gl_record_clear(&g, 1.0f, 0.5f, 0.0f, 1.0f);
    CHECK(g.clear_colour == 0xff0080ffu, "clear colour 0x%08x", g.clear_colour);
